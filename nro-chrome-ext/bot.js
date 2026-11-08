@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
 // @namespace    https://nroweb.com/
-// @version      2.4.2
-// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động 100% nhiệm vụ Bái sư (Ốc sên Núi hoa vàng 31, Ốc mượn hồn Đảo Kamê 5, Quỷ đầu nhọn Vách núi đen 20), tự động tìm Sư Phụ theo từng hành tinh (Trưởng lão Guru 13 / Quy Lão 5 / Vua Vegeta 20) & hoàn thành một mạch.
+// @version      2.4.3
+// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch.
 // @author       Antigravity
 // @match        https://nroweb.com/nro/*
 // @match        http://nroweb.com/nro/*
@@ -976,6 +976,102 @@
     return `🗣️ Đang tự động báo cáo với NPC ${targetNpc.name || ("#" + targetNpc.templateId)}...`;
   }
 
+  // ============================================================================
+  // HỆ THỐNG DI CHUYỂN LIÊN HÀNH TINH QUA TRẠM TÀU VŨ TRỤ (INTER-PLANET TRANSIT)
+  // ============================================================================
+  const PLANET_SPACESHIP_MAPS = {
+    0: 24, // Trạm tàu vũ trụ Trái Đất (Map 24)
+    1: 25, // Trạm tàu vũ trụ Namếc (Map 25)
+    2: 26  // Trạm tàu vũ trụ Xayda (Map 26)
+  };
+
+  const PLANET_NAMES = {
+    0: "Trái Đất",
+    1: "Namếc",
+    2: "Xayda"
+  };
+
+  function getPlanetOfMap(mapId) {
+    if ([0, 1, 2, 3, 4, 5, 6, 21, 24, 27, 28, 29, 30, 42, 45, 46, 47, 52].includes(mapId)) return 0;
+    if ([7, 8, 9, 10, 11, 12, 13, 22, 25, 31, 32, 33, 34, 43].includes(mapId)) return 1;
+    if ([14, 15, 16, 17, 18, 19, 20, 23, 26, 35, 36, 37, 38, 44, 64, 65, 68].includes(mapId)) return 2;
+    return -1;
+  }
+
+  // Tự động tương tác với NPC Tàu Vũ Trụ tại Trạm tàu (Map 24, 25, 26) để bay sang hành tinh đích
+  function autoUseSpaceshipToPlanetInRam(state, targetPlanet) {
+    if (!state) return "Đang đợi RAM...";
+    const gameCanvasStatic = state.ptrs.gameCanvasStatic;
+    const myCharPtr = state.ptrs.myCharPtr;
+    if (!gameCanvasStatic || !myCharPtr) return "Đang đợi GameCanvas...";
+
+    // 1. Kiểm tra nếu ChatPopup đang hiện (bấm qua)
+    const chatPopupStatic = getStaticFieldsPtr(ADDR.ChatPopup_TypeInfo);
+    if (chatPopupStatic) {
+      const currPopup = HEAPU32[(chatPopupStatic + 16) >> 2];
+      const serverPopup = HEAPU32[(chatPopupStatic + 20) >> 2];
+      if ((currPopup && currPopup < wasmBuffer.byteLength) || (serverPopup && serverPopup < wasmBuffer.byteLength)) {
+        pressEnterCenterInRam();
+        pressAsciiKeyInRam(32);
+        return "💬 Đang bấm qua hội thoại Tàu vũ trụ...";
+      }
+    }
+
+    // 2. Kiểm tra nếu Menu chọn hành tinh đang mở
+    const menuPtr = HEAPU32[(gameCanvasStatic + 196) >> 2];
+    if (menuPtr && menuPtr < wasmBuffer.byteLength && HEAPU8[menuPtr + 8] === 1) {
+      const menuItemsVec = HEAPU32[(menuPtr + 12) >> 2];
+      const cmdPtrs = readMyVector(menuItemsVec);
+      let bestIdx = -1;
+      const pKeywords = {
+        0: ["trai dat", "earth"],
+        1: ["namec", "namek", "guru"],
+        2: ["xayda", "saiyan", "vegeta"]
+      }[targetPlanet] || [];
+
+      for (let i = 0; i < cmdPtrs.length; i++) {
+        const caption = normalizeText(readIl2CppString(HEAPU32[(cmdPtrs[i] + 16) >> 2]));
+        if (pKeywords.some(kw => caption.includes(kw))) {
+          bestIdx = i;
+          break;
+        }
+      }
+      if (bestIdx >= 0) {
+        HEAP32[(menuPtr + 16) >> 2] = bestIdx;
+        pressEnterCenterInRam();
+        return `🚀 Đang chọn bay sang ${PLANET_NAMES[targetPlanet]} (Mục #${bestIdx + 1})...`;
+      }
+    }
+
+    // 3. Tìm NPC Tàu vũ trụ trong map hiện tại
+    let targetNpc = null;
+    if (state.npcs && state.npcs.length > 0) {
+      targetNpc = state.npcs.find(n => {
+        const name = normalizeText(n.name);
+        return name.includes("tau") || name.includes("phi thuyen") || name.includes("tram") || name.includes("uron");
+      }) || state.npcs.find(n => n.templateId !== 4) || state.npcs[0];
+    }
+
+    if (!targetNpc) {
+      return `🔍 Đang tìm Tàu vũ trụ tại ${state.mapName}...`;
+    }
+
+    // 4. Áp sát và tương tác với NPC Tàu vũ trụ
+    const dist = Math.hypot(targetNpc.x - state.cx, targetNpc.y - state.cy);
+    if (dist > 36 && targetNpc.x > 0 && targetNpc.y > 0) {
+      HEAP32[(myCharPtr + 80) >> 2] = targetNpc.x;
+      HEAP32[(myCharPtr + 84) >> 2] = targetNpc.y;
+    }
+
+    HEAPU32[(myCharPtr + 568) >> 2] = 0;
+    HEAPU32[(myCharPtr + 584) >> 2] = 0;
+    HEAPU32[(myCharPtr + 580) >> 2] = targetNpc.ptr;
+
+    pressEnterCenterInRam();
+    pressAsciiKeyInRam(13);
+    return `🚀 Đang mở hội thoại Tàu vũ trụ để sang ${PLANET_NAMES[targetPlanet]}...`;
+  }
+
   // Tự động ăn Đậu thần trực tiếp trong RAM (kích hoạt GameScr.doUseHP() qua keyPressed[10] tại Fn 21772 @15428)
   function useBeanInRam() {
     const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
@@ -1128,6 +1224,7 @@
     lastXmapTargetId: -1,
     lastMapId: -1,
     lastTaskStepIndex: -1,
+    lastSpaceshipTime: 0,
     mobTracker: new Map(),
     lastFocusedMobId: -1,
     options: {
@@ -1380,6 +1477,40 @@
       }
       setBossAttackInRam(false, state);
 
+      // 4a. KIỂM TRA ĐIỀU HƯỚNG LIÊN HÀNH TINH (Trái Đất 0, Namếc 1, Xayda 2)
+      const currPlanet = getPlanetOfMap(state.mapId);
+      const targetPlanet = getPlanetOfMap(targetMapId);
+      const isDifferentPlanet = currPlanet !== -1 && targetPlanet !== -1 && currPlanet !== targetPlanet;
+
+      if (isDifferentPlanet) {
+        const stationMapId = PLANET_SPACESHIP_MAPS[currPlanet];
+        // Nếu chưa tới Trạm tàu vũ trụ của hành tinh hiện tại -> Xmap tới Trạm tàu vũ trụ
+        if (state.mapId !== stationMapId) {
+          const needRetriggerStation =
+            !state.isXmapRunning ||
+            bot.lastXmapTargetId !== stationMapId;
+
+          if (needRetriggerStation && (now - bot.lastXmapTriggerTime > 400)) {
+            startXmapInRam(stationMapId, state.mapId);
+            bot.lastXmapTriggerTime = now;
+            bot.lastXmapTargetId = stationMapId;
+          }
+          bot.statusText = `🚀 Đang Xmap tới ${MAP_NAMES[stationMapId] || ("Map " + stationMapId)} để bay sang ${PLANET_NAMES[targetPlanet]} [${req.stepName}]`;
+          return;
+        }
+
+        // Đã tới Trạm tàu vũ trụ! Dừng Xmap và tương tác với Tàu vũ trụ để bay sang hành tinh đích
+        if (state.isXmapRunning) {
+          stopXmapInRam();
+        }
+        if (!bot.lastSpaceshipTime || now - bot.lastSpaceshipTime > 380) {
+          bot.statusText = autoUseSpaceshipToPlanetInRam(state, targetPlanet);
+          bot.lastSpaceshipTime = now;
+        }
+        return;
+      }
+
+      // 4b. CÙNG HÀNH TINH: XMAP TRỰC TIẾP TỚI MAP ĐÍCH
       const xmapCtrlReady = state.ptrs.xmapCtrlStatic !== 0;
       const needRetrigger =
         !state.isXmapRunning ||
@@ -1511,7 +1642,7 @@
 
     container.innerHTML = `
       <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-        <span>🐉 NRO DEEP MEMORY BOT v2.4.2</span>
+        <span>🐉 NRO DEEP MEMORY BOT v2.4.3</span>
         <div style="display:flex; gap:6px; align-items:center;">
           <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
           <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
@@ -1827,5 +1958,5 @@
   }
 
   window.__NRO_DEEP_BOT_TIMER__ = setInterval(tickBot, 80);
-  console.log("[NRO Deep Bot v2.4.2] Đã nạp thành công! Sửa dứt điểm nhiệm vụ Bái sư: Namếc săn Ốc sên Núi hoa vàng 31 ➔ Sư phụ Guru 13, Trái Đất ➔ Quy Lão 5, Xayda ➔ Vegeta 20.");
+  console.log("[NRO Deep Bot v2.4.3] Đã nạp thành công! Tự động chuyển hành tinh qua Trạm Tàu Vũ Trụ (Xayda 26 ➔ Namếc 25 / Trái Đất 24) hoàn thành báo cáo Trưởng Lão Guru!");
 })();
