@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
 // @namespace    https://nroweb.com/
-// @version      2.3.1
-// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Mở khóa ModFunc.canUpdate (+8), đọc chuẩn xác Nhiệm vụ (Char.taskMaint), tự rời nhà, tự hồi sinh về nhà ăn đậu & Goback khi chết, Xmap theo MapID thật, đếm chính xác từng con quái.
+// @version      2.4.2
+// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động 100% nhiệm vụ Bái sư (Ốc sên Núi hoa vàng 31, Ốc mượn hồn Đảo Kamê 5, Quỷ đầu nhọn Vách núi đen 20), tự động tìm Sư Phụ theo từng hành tinh (Trưởng lão Guru 13 / Quy Lão 5 / Vua Vegeta 20) & hoàn thành một mạch.
 // @author       Antigravity
 // @match        https://nroweb.com/nro/*
 // @match        http://nroweb.com/nro/*
@@ -29,10 +29,11 @@
     AutoXmap_TypeInfo: 2558776,       // Mod.XMAP.AutoXmap class
     XmapController_TypeInfo: 2563860, // Mod.XMAP.XmapController class
     XmapData_TypeInfo: 2563864,       // Mod.XMAP.XmapData class
-    ModFunc_TypeInfo: 2561364,        // ModFunc class (chứa cờ canUpdate tại instance + 8)
+    ModFunc_TypeInfo: 2561364,        // ModFunc class (canUpdate +8, autoAttack +28, focusBoss +161)
     Char_TypeInfo: 2559056,           // Char class
     GameScr_TypeInfo: 2560084,        // GameScr class
     GameCanvas_TypeInfo: 2560064,     // GameCanvas class
+    ChatPopup_TypeInfo: 2559076,      // ChatPopup class (currChatPopup +16, serverChatPopUp +20)
     InfoDlg_TypeInfo: 2560820,        // InfoDlg class
     Mob_TypeInfo: 2561352             // Mob class
   };
@@ -51,7 +52,7 @@
     35: "Rừng cọ", 36: "Rừng đá", 37: "Thung lũng đen", 38: "Bờ vực đen",
     42: "Vách núi Aru", 43: "Vách núi Moori", 44: "Vách núi Kakarot",
     45: "Thần điện", 46: "Tháp Karin", 47: "Rừng Karin",
-    52: "Đại hội võ thuật", 84: "Siêu thị"
+    52: "Đại hội võ thuật", 64: "Núi dây leo", 65: "Núi cây quỷ", 68: "Thung lũng Nappa", 84: "Siêu thị"
   };
 
   function normalizeText(s) {
@@ -63,10 +64,93 @@
       .trim();
   }
 
-  // Bảng ánh xạ tự động từ tên Quái / bước Nhiệm vụ trong RAM -> Map ID chuẩn xác 100%
+  // Kiểm tra bước nhiệm vụ có phải là nhiệm vụ diệt Trùm (Boss) hay không
+  function isBossQuestStep(stepText) {
+    const s = normalizeText(stepText);
+    return (
+      s.includes("akkuman") ||
+      s.includes("tamborine") ||
+      s.includes("drum") ||
+      s.includes("tau pay pay") ||
+      s.includes("kuku") ||
+      s.includes("map dau dinh") ||
+      s.includes("rambo") ||
+      s.includes("tieu doi") ||
+      s.includes("fide") ||
+      s.includes("android") ||
+      s.includes("king kong") ||
+      s.includes("xen bo hung")
+    );
+  }
+
+  // Kiểm tra bước nhiệm vụ có phải là Đánh quái / Nhặt vật phẩm (kể cả khi max = 0 như "Đánh bọn ốc sên lấy truyện (0/0)")
+  function isMobKillOrCollectStep(stepText) {
+    const s = normalizeText(stepText || "");
+    // Nếu là bước báo cáo hoặc nộp/bái sư thuần túy (không có hành động đánh)
+    if (s.includes("bai su") || s.includes("giao truyen") || s.includes("nop truyen")) {
+      if (!s.includes("danh") && !s.includes("lay") && !s.includes("tim")) return false;
+    }
+    return (
+      s.includes("danh ") ||
+      s.includes("tieu diet") ||
+      s.includes("ha ") ||
+      s.includes("san ") ||
+      s.includes("lay truyen") ||
+      s.includes("tim truyen") ||
+      s.includes("thu thap") ||
+      s.includes("oc sen") ||
+      s.includes("oc muon hon") ||
+      s.includes("quy dau nhon") ||
+      s.includes("than lan") ||
+      s.includes("bulon") ||
+      s.includes("ukulele") ||
+      s.includes("quy map") ||
+      s.includes("heo ")
+    );
+  }
+
+  // Kiểm tra bước nhiệm vụ có phải là Báo cáo / Nói chuyện với NPC hay không
+  function isNpcReportStep(stepText) {
+    const s = normalizeText(stepText || "");
+    if (isMobKillOrCollectStep(stepText)) return false;
+    return (
+      s.includes("bao cao") ||
+      s.includes("noi chuyen") ||
+      s.includes("gap ") ||
+      s.includes("giao ") ||
+      s.includes("quay ve") ||
+      s.includes("ve nha") ||
+      s.includes("bai su") ||
+      s.includes("nhan su phu") ||
+      s.includes("su phu") ||
+      s.includes("ong gohan") ||
+      s.includes("ong moori") ||
+      s.includes("ong paragus") ||
+      s.includes("quy lao") ||
+      s.includes("truong lao") ||
+      s.includes("vua vegeta") ||
+      s.includes("bo mong") ||
+      s.includes("than meo") ||
+      s.includes("thuong de") ||
+      s.includes("bunma") ||
+      s.includes("dende") ||
+      s.includes("appule")
+    );
+  }
+
+  // Bảng ánh xạ tự động từ tên Quái / Trùm / NPC trong RAM -> Map ID chuẩn xác 100%
   function resolveQuestStepToMapId(stepText, detailText, cgender) {
-    const stepNorm = normalizeText(stepText);
-    const detailNorm = normalizeText(detailText);
+    const stepNorm = normalizeText(stepText || "");
+    const detailNorm = normalizeText(detailText || "");
+
+    // 0. Nhiệm vụ tiêu diệt Trùm (Boss): Akkuman / Tamborine / Drum / Tàu Pảy Pảy / Kuku...
+    if (stepNorm.includes("akkuman")) return 19;      // Akkuman tại Thành phố Vegeta - Map ID 19
+    if (stepNorm.includes("tamborine")) return 6;     // Tamborine tại Đông Karin - Map ID 6
+    if (stepNorm.includes("drum")) return 10;         // Drum tại Thung lũng Namếc - Map ID 10
+    if (stepNorm.includes("tau pay pay")) return 47;  // Tàu Pảy Pảy tại Rừng Karin - Map ID 47
+    if (stepNorm.includes("kuku")) return 68;         // Kuku tại Thung lũng Nappa - Map ID 68
+    if (stepNorm.includes("map dau dinh")) return 64; // Mập Đầu Đinh tại Núi dây leo - Map ID 64
+    if (stepNorm.includes("rambo")) return 65;        // Rambo tại Núi cây quỷ - Map ID 65
 
     // 1. Nhiệm vụ Bang hội 2 & các quái đặc trưng:
     if (stepNorm.includes("bulon")) return 30;        // Bulon tại Đảo Bulông (Trái Đất) - Map ID 30
@@ -78,7 +162,52 @@
     if (stepNorm.includes("heo da xanh")) return 31;  // Núi hoa vàng - Map ID 31
     if (stepNorm.includes("heo xayda")) return 35;    // Rừng cọ - Map ID 35
 
-    // 3. Các quái nhiệm vụ chính tuyến phổ biến:
+    // 3. Nhiệm vụ Bái sư (Truyện Doremon tập 2) & các quái nhiệm vụ chính tuyến:
+    // Quái đánh săn rơi Truyện theo từng hành tinh:
+    // - Namếc (cgender = 1): Ốc sên -> Núi hoa vàng (Map ID 31)
+    // - Trái Đất (cgender = 0): Ốc mượn hồn -> Đảo Kamê (Map ID 5)
+    // - Xayda (cgender = 2): Quỷ đầu nhọn -> Vách núi đen (Map ID 20)
+    if (stepNorm.includes("oc sen")) return 31;       // Ốc sên tại Núi hoa vàng - Map ID 31
+    if (stepNorm.includes("oc muon hon")) return 5;   // Ốc mượn hồn tại Đảo Kamê - Map ID 5
+    if (stepNorm.includes("quy dau nhon")) return 20; // Quỷ đầu nhọn tại Vách núi đen - Map ID 20
+    if (stepNorm.includes("than lan xanh")) return 29;// Thằn lằn xanh tại Nam Kamê - Map ID 29
+
+    // Bước Bái Sư / Giao truyện / Báo cáo Sư Phụ theo từng hành tinh:
+    // - Namếc (cgender = 1): Trưởng Lão Guru tại Đảo Guru (Map ID 13)
+    // - Trái Đất (cgender = 0): Quy Lão Kamê tại Đảo Kamê (Map ID 5)
+    // - Xayda (cgender = 2): Vua Vegeta tại Vách Núi Đen (Map ID 20)
+    if (
+      stepNorm.includes("bai su") ||
+      stepNorm.includes("giao truyen") ||
+      stepNorm.includes("nop truyen") ||
+      stepNorm.includes("nhan su phu") ||
+      (stepNorm.includes("su phu") && !stepNorm.includes("danh"))
+    ) {
+      if (cgender === 1) return 13; // Sư phụ Namếc: Trưởng Lão Guru (Đảo Guru - Map 13)
+      if (cgender === 2) return 20; // Sư phụ Xayda: Vua Vegeta (Vách núi đen - Map 20)
+      return 5;                     // Sư phụ Trái Đất: Quy Lão Kamê (Đảo Kamê - Map 5)
+    }
+
+    if (stepNorm.includes("truyen") || detailNorm.includes("doremon")) {
+      // Nếu là bước đánh quái tìm/lấy truyện
+      if (
+        stepNorm.includes("danh") ||
+        stepNorm.includes("lay") ||
+        stepNorm.includes("tim") ||
+        stepNorm.includes("san") ||
+        detailNorm.includes("danh") ||
+        detailNorm.includes("lay")
+      ) {
+        if (detailNorm.includes("oc sen") || stepNorm.includes("oc sen") || cgender === 1) return 31; // Núi hoa vàng (Map 31)
+        if (detailNorm.includes("oc muon hon") || stepNorm.includes("oc muon hon") || cgender === 0) return 5; // Đảo Kamê (Map 5)
+        if (detailNorm.includes("quy dau nhon") || stepNorm.includes("quy dau nhon") || cgender === 2) return 20; // Vách núi đen (Map 20)
+      }
+      // Nếu là bước nộp / giao / bái sư
+      if (cgender === 1) return 13; // Sư phụ Namếc: Đảo Guru (Map 13)
+      if (cgender === 2) return 20; // Sư phụ Xayda: Vách núi đen (Map 20)
+      return 5;                     // Sư phụ Trái Đất: Đảo Kamê (Map 5)
+    }
+
     if (stepNorm.includes("moc nhan")) return cgender === 0 ? 0 : (cgender === 1 ? 7 : 14);
     if (stepNorm.includes("khung long me")) return 2;
     if (stepNorm.includes("khung long")) return 1;
@@ -92,29 +221,40 @@
     if (stepNorm.includes("phi long")) return 10;
     if (stepNorm.includes("quy bay me")) return 18;
     if (stepNorm.includes("quy bay")) return 17;
-    if (stepNorm.includes("than lan xanh")) return 29;
-    if (stepNorm.includes("oc muon hon")) return 33;
-    if (stepNorm.includes("oc sen")) return 31;
 
     // 4. Báo cáo nhiệm vụ / Gặp NPC:
+    if (stepNorm.includes("quy lao") || stepNorm.includes("dao kame")) return 5;
+    if (stepNorm.includes("truong lao") || stepNorm.includes("dao guru")) return 13;
+    if (stepNorm.includes("vua vegeta") || stepNorm.includes("vach nui den")) return 20;
+    if (stepNorm.includes("bo mong") || stepNorm.includes("rung karin")) return 47;
+    if (stepNorm.includes("than meo") || stepNorm.includes("thap karin")) return 46;
+    if (stepNorm.includes("thuong de") || stepNorm.includes("than dien")) return 45;
+    if (stepNorm.includes("bunma")) return 0;
+    if (stepNorm.includes("dende")) return 7;
+    if (stepNorm.includes("appule")) return 14;
+    if (stepNorm.includes("ong gohan")) return 21;
+    if (stepNorm.includes("ong moori")) return 22;
+    if (stepNorm.includes("ong paragus")) return 23;
+
     if (
       stepNorm.includes("bao cao") ||
-      stepNorm.includes("ong gohan") ||
-      stepNorm.includes("ong moori") ||
-      stepNorm.includes("ong paragus") ||
+      stepNorm.includes("noi chuyen") ||
+      stepNorm.includes("quay ve") ||
       stepNorm.includes("ve nha")
     ) {
-      if (stepNorm.includes("quy lao") || stepNorm.includes("kame")) return 5;
-      if (stepNorm.includes("bo mong") || stepNorm.includes("karin")) return 47;
       return 21 + (cgender || 0);
     }
-    if (stepNorm.includes("quy lao") || stepNorm.includes("dao kame")) return 5;
-    if (stepNorm.includes("bo mong") || stepNorm.includes("rung karin")) return 47;
 
-    // 5. Dò trực tiếp tên Map trong chuỗi stepText hoặc detailText
+    // 5. Dò tên Map trực tiếp trong stepNorm trước, sau đó mới tới detailNorm
     for (const [idStr, mName] of Object.entries(MAP_NAMES)) {
       const mNorm = normalizeText(mName);
-      if (mNorm.length >= 5 && (stepNorm.includes(mNorm) || detailNorm.includes(mNorm))) {
+      if (mNorm.length >= 5 && stepNorm.includes(mNorm)) {
+        return Number(idStr);
+      }
+    }
+    for (const [idStr, mName] of Object.entries(MAP_NAMES)) {
+      const mNorm = normalizeText(mName);
+      if (mNorm.length >= 5 && detailNorm.includes(mNorm)) {
         return Number(idStr);
       }
     }
@@ -127,10 +267,63 @@
   // ============================================================================
   const QUEST_PRESETS = {
     "auto_ram_quest": {
-      name: "🤖 Tự động 100% theo Nhiệm Vụ trong Game (Đọc trực tiếp RAM)",
+      name: "🤖 Tự động 100% theo Nhiệm Vụ trong Game (Đọc RAM + Tự báo cáo NPC)",
       autoFromRam: true,
       loop: true,
       stages: []
+    },
+    "quest_comic_snail": {
+      name: "📚 NV Bái Sư / Ốc Truyện Tranh (Săn Map 31/5/20 ➔ Bái Sư Phụ 13/5/20)",
+      autoFromRam: true,
+      preferComicSnail: true,
+      loop: false,
+      stages: [
+        {
+          name: "Đánh Ốc sên / Ốc mượn hồn / Quỷ đầu nhọn lấy Truyện Doremon tập 2",
+          mapId: "COMIC_MOB",
+          targetKills: 1,
+          mobNameHint: "Ốc"
+        },
+        {
+          name: "Bái Sư / Giao Truyện cho Sư Phụ (Guru 13 / Quy Lão 5 / Vegeta 20)",
+          mapId: "MASTER",
+          targetKills: 0,
+          isNpcStep: true
+        }
+      ]
+    },
+    "boss_quest_trums": {
+      name: "👑 NV Tiêu Diệt Trùm: Akkuman (19) → Tamborine (6) → Drum (10)",
+      loop: false,
+      stages: [
+        {
+          name: "Tiêu diệt Akkuman (Thành phố Vegeta)",
+          mapId: 19,
+          targetKills: 1,
+          isBossStep: true,
+          mobNameHint: "Akkuman"
+        },
+        {
+          name: "Tiêu diệt Tamborine (Đông Karin)",
+          mapId: 6,
+          targetKills: 1,
+          isBossStep: true,
+          mobNameHint: "Tamborine"
+        },
+        {
+          name: "Tiêu diệt Drum (Thung lũng Namếc)",
+          mapId: 10,
+          targetKills: 1,
+          isBossStep: true,
+          mobNameHint: "Drum"
+        },
+        {
+          name: "Quay về Nhà báo cáo NPC",
+          mapId: "HOME",
+          targetKills: 0,
+          isNpcStep: true
+        }
+      ]
     },
     "clan_quest_bulon": {
       name: "NV Bang Hội 2: Bulon (Map 30) → Ukulele (Map 34) → Quỷ Mập (Map 38)",
@@ -157,7 +350,8 @@
         {
           name: "Quay về Đảo Kamê hoàn thành",
           mapId: 5,         // Đảo Kamê
-          targetKills: 0
+          targetKills: 0,
+          isNpcStep: true
         }
       ]
     },
@@ -186,7 +380,8 @@
         {
           name: "Quay về Nhà báo cáo nhiệm vụ",
           mapId: "HOME",
-          targetKills: 0
+          targetKills: 0,
+          isNpcStep: true
         }
       ]
     },
@@ -379,7 +574,7 @@
     const cx = HEAP32[(myCharPtr + 80) >> 2];
     const cy = HEAP32[(myCharPtr + 84) >> 2];
     const statusMe = HEAP32[(myCharPtr + 108) >> 2];
-    const cgender = HEAP32[(myCharPtr + 116) >> 2]; // 0: Trái Đất, 1: Namếc, 2: Xayda
+    const cgender = HEAP32[(myCharPtr + 120) >> 2]; // +120: cgender (0: Trái Đất, 1: Namếc, 2: Xayda)
 
     const cMP = readF64(myCharPtr + 184);
     const cHP = readF64(myCharPtr + 192);
@@ -389,6 +584,8 @@
     const isDie = statusMe === 14 || HEAPU8[myCharPtr + 310] === 1 || (cHPFull > 0 && cHP <= 0);
     const isChangingMap = HEAPU8[myCharPtr + 34] === 1;
     const mobFocusPtr = HEAPU32[(myCharPtr + 568) >> 2];
+    const npcFocusPtr = HEAPU32[(myCharPtr + 580) >> 2];
+    const charFocusPtr = HEAPU32[(myCharPtr + 584) >> 2];
 
     const isInfoDlgShowing = infoDlgStatic ? (HEAPU8[infoDlgStatic + 16] === 1) : false;
 
@@ -418,9 +615,8 @@
       const status = HEAP32[(mPtr + 96) >> 2];
       const mobId = HEAP32[(mPtr + 152) >> 2];
       const templateId = HEAP32[(mPtr + 192) >> 2];
-      const isMobMe = HEAPU8[mPtr + 228] === 1;
-      const isBusy = HEAPU8[mPtr + 231] === 1;
-      const alive = !isMobMe && !isBusy && status >= 2 && hp > 0;
+      const isMobMe = HEAPU8[mPtr + 231] === 1;
+      const alive = !isMobMe && status >= 2 && hp > 0;
       if (alive) aliveMobs++;
 
       mobs.push({
@@ -437,19 +633,50 @@
       });
     }
 
-    // Đọc danh sách Nhân vật / Boss trong khu (GameScr.vCharInMap)
+    // Đọc danh sách NPC trong Map (GameScr.vNpc tại +260)
+    const vNpcPtr = HEAPU32[(gameScrStatic + 260) >> 2];
+    const npcPtrs = readMyVector(vNpcPtr);
+    const npcs = [];
+    for (let i = 0; i < npcPtrs.length; i++) {
+      const nPtr = npcPtrs[i];
+      const isHide = HEAPU8[nPtr + 1500] === 1;
+      if (isHide) continue;
+      const nx = HEAP32[(nPtr + 80) >> 2];
+      const ny = HEAP32[(nPtr + 84) >> 2];
+      const tplPtr = HEAPU32[(nPtr + 1484) >> 2];
+      const templateId = (tplPtr && tplPtr < wasmBuffer.byteLength) ? HEAP32[(tplPtr + 8) >> 2] : -1;
+      const name = (tplPtr && tplPtr < wasmBuffer.byteLength) ? readIl2CppString(HEAPU32[(tplPtr + 12) >> 2]) : "";
+      npcs.push({
+        ptr: nPtr,
+        templateId,
+        name,
+        x: nx,
+        y: ny,
+        isFocused: nPtr === npcFocusPtr
+      });
+    }
+
+    // Đọc danh sách Nhân vật / Boss trong khu (GameScr.vCharInMap tại +240)
+    // Offset chuẩn Fn 20185 (ModFunc.AutoFocusBoss): charID (+116), cTypePk (+553), cName (+376)
     const vCharPtr = HEAPU32[(gameScrStatic + 240) >> 2];
     const charPtrs = readMyVector(vCharPtr);
     let bossDetected = null;
+    const charsInMap = [];
     for (let i = 0; i < charPtrs.length; i++) {
       const cPtr = charPtrs[i];
       if (cPtr === myCharPtr) continue;
       const charHP = readF64(cPtr + 192);
       const charHPFull = readF64(cPtr + 248);
-      const cTypePk = HEAP8[cPtr + 142];
-      const cName = readIl2CppString(HEAPU32[(cPtr + 148) >> 2]);
-      if ((cTypePk === 5 || cName.toUpperCase().includes("BOSS")) && charHP > 0) {
-        bossDetected = { ptr: cPtr, name: cName || "BOSS", hp: charHP, maxHp: charHPFull };
+      const charID = HEAP32[(cPtr + 116) >> 2];
+      const cTypePk = HEAP8[cPtr + 553];
+      const cName = readIl2CppString(HEAPU32[(cPtr + 376) >> 2]);
+      const charX = HEAP32[(cPtr + 80) >> 2];
+      const charY = HEAP32[(cPtr + 84) >> 2];
+      const isBoss = (cTypePk === 5 || charID < 0 || cName.toUpperCase().includes("BOSS")) && charHP > 0;
+      const charObj = { ptr: cPtr, charID, name: cName || "Nhân vật", hp: charHP, maxHp: charHPFull, x: charX, y: charY, cTypePk, isBoss };
+      charsInMap.push(charObj);
+      if (isBoss) {
+        bossDetected = charObj;
       }
     }
 
@@ -546,19 +773,34 @@
       xmapTargetId,
       mobs,
       aliveMobs,
+      npcs,
+      charsInMap,
       bossDetected,
       taskMaint
     };
   }
 
   // ============================================================================
-  // 5. ĐIỀU KHIỂN TRỰC TIẾP TRONG RAM (TÀN SÁT, XMAP, HỒI SINH, RỜI NHÀ, ĂN ĐẬU)
+  // 5. ĐIỀU KHIỂN TRỰC TIẾP TRONG RAM (TÀN SÁT, XMAP, BOSS, NPC, HỒI SINH, RỜI NHÀ)
   // ============================================================================
   // Gửi mã phím ASCII trực tiếp vào GameCanvas.keyAsciiPress (+536) chuẩn Fn 32922
   function pressAsciiKeyInRam(charCode) {
     const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
     if (!gameCanvasStatic) return false;
     HEAP32[(gameCanvasStatic + 536) >> 2] = charCode; // GameCanvas.keyAsciiPress
+    return true;
+  }
+
+  // Bấm phím Enter / Center softkey (index 5, 15, 25 trong GameCanvas.keyPressed tại +60)
+  function pressEnterCenterInRam() {
+    const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
+    if (!gameCanvasStatic) return false;
+    const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
+    if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
+      HEAPU8[keyPressedPtr + 16 + 5] = 1;
+      HEAPU8[keyPressedPtr + 16 + 15] = 1;
+      HEAPU8[keyPressedPtr + 16 + 25] = 1;
+    }
     return true;
   }
 
@@ -575,14 +817,163 @@
       HEAP32[(menuPtr + 16) >> 2] = 0; // menuSelectedItem = 0 ("Về nhà")
     }
 
-    // 2. Bật cờ nhấn phím Enter / Center softkey (index 5, 15, 25 trong mảng GameCanvas.keyPressed tại +60)
-    const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
-    if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
-      HEAPU8[keyPressedPtr + 16 + 5] = 1;
-      HEAPU8[keyPressedPtr + 16 + 15] = 1;
-      HEAPU8[keyPressedPtr + 16 + 25] = 1;
-    }
+    // 2. Bật cờ nhấn phím Enter / Center softkey
+    pressEnterCenterInRam();
     return true;
+  }
+
+  // Bật/Tắt chế độ Tự động khóa mục tiêu & Tấn công Trùm (Boss nhiệm vụ: Akkuman, Tamborine, Drum...)
+  // Sử dụng ModFunc.gI().focusBoss (+161) và ModFunc.gI().autoAttack (+28) chuẩn Fn 20185 & Fn 20183
+  function setBossAttackInRam(enable, state, bossNameHint) {
+    const modFuncStatic = getStaticFieldsPtr(ADDR.ModFunc_TypeInfo);
+    if (modFuncStatic) {
+      const modFuncInstance = HEAPU32[(modFuncStatic + 0) >> 2];
+      if (modFuncInstance && modFuncInstance < wasmBuffer.byteLength) {
+        HEAPU8[modFuncInstance + 161] = enable ? 1 : 0; // focusBoss
+        HEAPU8[modFuncInstance + 28] = enable ? 1 : 0;  // autoAttack
+      }
+    }
+
+    if (!enable || !state) return false;
+
+    const myCharPtr = state.ptrs.myCharPtr;
+    const hintNorm = normalizeText(bossNameHint || "");
+
+    // Tìm Boss trong danh sách nhân vật trong khu (GameScr.vCharInMap)
+    let targetChar = null;
+    if (state.charsInMap && state.charsInMap.length > 0) {
+      for (const ch of state.charsInMap) {
+        const chNorm = normalizeText(ch.name);
+        if ((hintNorm && chNorm.includes(hintNorm)) || ch.isBoss) {
+          targetChar = ch;
+          break;
+        }
+      }
+    }
+
+    if (targetChar && myCharPtr) {
+      // Khóa trực tiếp charFocus (+584), xóa mobFocus (+568) và npcFocus (+580)
+      HEAPU32[(myCharPtr + 568) >> 2] = 0;
+      HEAPU32[(myCharPtr + 580) >> 2] = 0;
+      HEAPU32[(myCharPtr + 584) >> 2] = targetChar.ptr;
+
+      // Áp sát Boss nếu khoảng cách xa > 60px
+      const dist = Math.hypot(targetChar.x - state.cx, targetChar.y - state.cy);
+      if (dist > 60 && targetChar.x > 0 && targetChar.y > 0) {
+        HEAP32[(myCharPtr + 80) >> 2] = targetChar.x;
+        HEAP32[(myCharPtr + 84) >> 2] = targetChar.y;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  // Tự động tìm NPC trong Map, dịch chuyển tới cạnh NPC, mở Menu & bấm qua toàn bộ hội thoại báo cáo nhiệm vụ
+  function autoTalkAndReportNpcInRam(state, stepText) {
+    if (!state) return "Đang đợi dữ liệu RAM...";
+    const gameCanvasStatic = state.ptrs.gameCanvasStatic;
+    const myCharPtr = state.ptrs.myCharPtr;
+    if (!gameCanvasStatic || !myCharPtr) return "Đang đợi GameCanvas...";
+
+    // 1. Kiểm tra nếu đang hiện bong bóng hội thoại NPC (ChatPopup.currChatPopup +16 hoặc serverChatPopUp +20)
+    const chatPopupStatic = getStaticFieldsPtr(ADDR.ChatPopup_TypeInfo);
+    if (chatPopupStatic) {
+      const currPopup = HEAPU32[(chatPopupStatic + 16) >> 2];
+      const serverPopup = HEAPU32[(chatPopupStatic + 20) >> 2];
+      if ((currPopup && currPopup < wasmBuffer.byteLength) || (serverPopup && serverPopup < wasmBuffer.byteLength)) {
+        pressEnterCenterInRam();
+        pressAsciiKeyInRam(32); // Space / Enter để qua nhanh từng dòng hội thoại NPC
+        return "💬 Đang bấm qua hội thoại báo cáo NPC...";
+      }
+    }
+
+    // 2. Kiểm tra nếu Menu lựa chọn của NPC đang mở (GameCanvas.menu tại +196, showMenu tại +8)
+    const menuPtr = HEAPU32[(gameCanvasStatic + 196) >> 2];
+    if (menuPtr && menuPtr < wasmBuffer.byteLength && HEAPU8[menuPtr + 8] === 1) {
+      const menuItemsVec = HEAPU32[(menuPtr + 12) >> 2];
+      const cmdPtrs = readMyVector(menuItemsVec);
+      let bestIdx = 0;
+      for (let i = 0; i < cmdPtrs.length; i++) {
+        const caption = normalizeText(readIl2CppString(HEAPU32[(cmdPtrs[i] + 16) >> 2]));
+        if (
+          caption.includes("nhiem vu") ||
+          caption.includes("bao cao") ||
+          caption.includes("giao") ||
+          caption.includes("nhan") ||
+          caption.includes("bai su") ||
+          caption.includes("hoc viec") ||
+          caption.includes("truyen") ||
+          caption.includes("dong y") ||
+          caption.includes("tiep tuc") ||
+          caption.includes("noi chuyen")
+        ) {
+          bestIdx = i;
+          break;
+        }
+      }
+      HEAP32[(menuPtr + 16) >> 2] = bestIdx; // menuSelectedItem = bestIdx
+      pressEnterCenterInRam();
+      return `📋 Đang chọn mục #${bestIdx + 1} trong Menu NPC...`;
+    }
+
+    // 3. Tìm NPC mục tiêu trong danh sách GameScr.vNpc của bản đồ hiện tại
+    const stepNorm = normalizeText(stepText || "");
+    let targetNpc = null;
+
+    if (state.npcs && state.npcs.length > 0) {
+      // 3a. Ưu tiên khớp tên NPC được nhắc trong bước nhiệm vụ
+      for (const npc of state.npcs) {
+        const nNorm = normalizeText(npc.name);
+        if (nNorm && nNorm.length >= 3 && stepNorm.includes(nNorm)) {
+          targetNpc = npc;
+          break;
+        }
+      }
+      // 3b. Nhiệm vụ Bái Sư / Giao truyện / Báo cáo Sư Phụ theo từng hành tinh:
+      if (!targetNpc && (stepNorm.includes("su phu") || stepNorm.includes("bai su") || stepNorm.includes("giao truyen") || stepNorm.includes("truyen"))) {
+        if (state.cgender === 1 || state.mapId === 13) {
+          targetNpc = state.npcs.find(n => n.templateId === 14 || normalizeText(n.name).includes("guru") || normalizeText(n.name).includes("truong lao"));
+        } else if (state.cgender === 2 || state.mapId === 20) {
+          targetNpc = state.npcs.find(n => n.templateId === 15 || normalizeText(n.name).includes("vegeta"));
+        } else {
+          targetNpc = state.npcs.find(n => n.templateId === 13 || normalizeText(n.name).includes("quy lao") || normalizeText(n.name).includes("kame"));
+        }
+      }
+      // 3c. Nếu đang ở Nhà (21, 22, 23): chọn Ông Gôhan (0) / Ông Moori (1) / Ông Paragus (2) (bỏ qua Cây Đậu Thần id=4)
+      if (!targetNpc && (state.mapId === 21 || state.mapId === 22 || state.mapId === 23)) {
+        targetNpc = state.npcs.find(n => n.templateId !== 4) || state.npcs[0];
+      }
+      // 3d. Nếu ở Đảo Kamê (5) ưu tiên Quy Lão (13), Đảo Guru (13) ưu tiên Trưởng lão Guru (14), Vách núi đen (20) ưu tiên Vua Vegeta (15), Rừng Karin (47) ưu tiên Bò Mộng (47)
+      if (!targetNpc) {
+        if (state.mapId === 5) targetNpc = state.npcs.find(n => n.templateId === 13 || normalizeText(n.name).includes("quy lao") || normalizeText(n.name).includes("kame"));
+        else if (state.mapId === 13) targetNpc = state.npcs.find(n => n.templateId === 14 || normalizeText(n.name).includes("guru") || normalizeText(n.name).includes("truong lao"));
+        else if (state.mapId === 20) targetNpc = state.npcs.find(n => n.templateId === 15 || normalizeText(n.name).includes("vegeta"));
+        else if (state.mapId === 47) targetNpc = state.npcs.find(n => n.templateId === 47 || normalizeText(n.name).includes("bo mong"));
+      }
+      // 3e. Dự phòng: chọn NPC đầu tiên không phải Cây Đậu Thần
+      if (!targetNpc) {
+        targetNpc = state.npcs.find(n => n.templateId !== 4) || state.npcs[0];
+      }
+    }
+
+    if (!targetNpc) {
+      return "🔍 Đang tìm NPC trong bản đồ...";
+    }
+
+    // 4. Dịch chuyển nhân vật tới sát vị trí NPC, gán Char.npcFocus (+580) và nhấn Enter để mở hội thoại/menu
+    const dist = Math.hypot(targetNpc.x - state.cx, targetNpc.y - state.cy);
+    if (dist > 36 && targetNpc.x > 0 && targetNpc.y > 0) {
+      HEAP32[(myCharPtr + 80) >> 2] = targetNpc.x;
+      HEAP32[(myCharPtr + 84) >> 2] = targetNpc.y;
+    }
+
+    HEAPU32[(myCharPtr + 568) >> 2] = 0;             // Xóa mobFocus
+    HEAPU32[(myCharPtr + 584) >> 2] = 0;             // Xóa charFocus
+    HEAPU32[(myCharPtr + 580) >> 2] = targetNpc.ptr; // Gán npcFocus = targetNpc
+
+    pressEnterCenterInRam();
+    pressAsciiKeyInRam(13);
+    return `🗣️ Đang tự động báo cáo với NPC ${targetNpc.name || ("#" + targetNpc.templateId)}...`;
   }
 
   // Tự động ăn Đậu thần trực tiếp trong RAM (kích hoạt GameScr.doUseHP() qua keyPressed[10] tại Fn 21772 @15428)
@@ -625,10 +1016,17 @@
       HEAPU8[pickMobStatic + 12] = options.telePem ? 1 : 0;
     }
     if (options.autoPick !== undefined) {
-      HEAPU8[pickMobStatic + 44] = options.autoPick ? 1 : 0;
+      HEAPU8[pickMobStatic + 44] = options.autoPick ? 1 : 0; // IsAutoPickItems
+      HEAPU8[pickMobStatic + 45] = options.autoPick ? 1 : 0; // IsPickItemsAll (nhặt tất cả vật phẩm nhiệm vụ như Truyện tranh)
+      HEAPU8[pickMobStatic + 46] = options.autoPick ? 1 : 0; // IsPickItemsDis (nhặt xa)
     }
-    // Cấu hình tự động bơm HP/MP bằng Đậu thần ở mức 50% trong PickMobController (+68, +72)
+    // Xóa bộ lọc loại quái (TypeMobsTanSat +36 & IdMobsTanSat +32) để không bị kẹt chỉ đánh 1 loại quái cũ
     if (enable) {
+      const idMobsList = HEAPU32[(pickMobStatic + 32) >> 2];
+      if (idMobsList && idMobsList < wasmBuffer.byteLength) HEAP32[(idMobsList + 12) >> 2] = 0;
+      const typeMobsList = HEAPU32[(pickMobStatic + 36) >> 2];
+      if (typeMobsList && typeMobsList < wasmBuffer.byteLength) HEAP32[(typeMobsList + 12) >> 2] = 0;
+
       if (HEAP32[(pickMobStatic + 68) >> 2] <= 0) HEAP32[(pickMobStatic + 68) >> 2] = 50; // hpBuff = 50%
       if (HEAP32[(pickMobStatic + 72) >> 2] <= 0) HEAP32[(pickMobStatic + 72) >> 2] = 50; // mpBuff = 50%
     }
@@ -746,6 +1144,16 @@
     if (stage.mapId === "HOME") {
       return 21 + (state.cgender || 0);
     }
+    if (stage.mapId === "MASTER") {
+      if (state.cgender === 1) return 13; // Sư phụ Namếc: Trưởng Lão Guru (Đảo Guru - Map 13)
+      if (state.cgender === 2) return 20; // Sư phụ Xayda: Vua Vegeta (Vách núi đen - Map 20)
+      return 5;                           // Sư phụ Trái Đất: Quy Lão Kamê (Đảo Kamê - Map 5)
+    }
+    if (stage.mapId === "COMIC_MOB") {
+      if (state.cgender === 1) return 31; // Namếc: Ốc sên (Núi hoa vàng - Map 31)
+      if (state.cgender === 2) return 20; // Xayda: Quỷ đầu nhọn (Vách núi đen - Map 20)
+      return 5;                           // Trái Đất: Ốc mượn hồn (Đảo Kamê - Map 5)
+    }
     return Number(stage.mapId);
   }
 
@@ -810,10 +1218,17 @@
 
       const autoMapId = resolveQuestStepToMapId(tm.activeStepName, tm.activeDetail, state.cgender);
       if (autoMapId !== null) {
-        const targetKills = tm.max > 0 ? tm.max : 0;
-        const currentKills = tm.max > 0 ? Math.max(tm.count, bot.stageKilledCount) : 0;
+        const bossStep = isBossQuestStep(tm.activeStepName);
+        const mobOrCollectStep = !bossStep && (tm.max > 0 || isMobKillOrCollectStep(tm.activeStepName) || isMobKillOrCollectStep(tm.activeDetail));
+        const npcStep = !bossStep && !mobOrCollectStep;
+        const isCollect = mobOrCollectStep && tm.max <= 0;
+        const targetKills = bossStep ? 1 : (tm.max > 0 ? tm.max : (mobOrCollectStep ? 1 : 0));
+        const currentKills = (bossStep || isCollect) ? 0 : Math.max(tm.count, bot.stageKilledCount);
         return {
           isAutoRam: true,
+          isBossStep: bossStep,
+          isNpcStep: npcStep,
+          isCollectStep: isCollect,
           stepName: tm.activeStepName || `Bước ${tm.index}`,
           mapId: autoMapId,
           targetKills,
@@ -825,8 +1240,8 @@
     // CHẾ ĐỘ 2: CHẠY THEO KỊCH BẢN PRESET HOẶC TÙY CHỈNH
     const activePreset = (preset && !preset.autoFromRam) ? preset : QUEST_PRESETS["clan_quest_bulon"];
 
-    // Đồng bộ tự động bước đang chạy với bảng Nhiệm vụ trong RAM (nếu nhiệm vụ trong RAM đang chỉ rõ Bulon / Ukulele / Quỷ mập chưa xong)
-    if (state.taskMaint && state.taskMaint.max > 0 && state.taskMaint.count < state.taskMaint.max) {
+    // Đồng bộ tự động bước đang chạy với bảng Nhiệm vụ trong RAM (nếu nhiệm vụ trong RAM đang chỉ rõ quái/trùm chưa xong)
+    if (state.taskMaint) {
       const stepNorm = normalizeText(state.taskMaint.activeStepName);
       for (let i = 0; i < activePreset.stages.length; i++) {
         const hint = activePreset.stages[i].mobNameHint;
@@ -851,21 +1266,24 @@
 
     const stage = activePreset.stages[bot.stageIndex];
     const targetMapId = resolveStageMapId(stage, state);
+    const bossStep = Boolean(stage.isBossStep) || isBossQuestStep(stage.name);
+    const npcStep = Boolean(stage.isNpcStep) || (!bossStep && (stage.targetKills || 0) <= 0);
 
     let currentKills = bot.stageKilledCount;
-    let targetKills = stage.targetKills || 0;
+    let targetKills = stage.targetKills || (bossStep ? 1 : 0);
     if (state.taskMaint && state.taskMaint.max > 0 && stage.mobNameHint) {
       const stepNorm = normalizeText(state.taskMaint.activeStepName);
       const hintNorm = normalizeText(stage.mobNameHint);
       if (stepNorm.includes(hintNorm)) {
         targetKills = state.taskMaint.max;
-        // Lấy đúng số lượng thực tế của nhiệm vụ trong RAM nếu taskMaint.count hợp lệ (< max)
         currentKills = state.taskMaint.count;
       }
     }
 
     return {
       isAutoRam: false,
+      isBossStep: bossStep,
+      isNpcStep: npcStep,
       stepName: stage.name,
       mapId: targetMapId,
       targetKills,
@@ -885,6 +1303,7 @@
     if (req.finished) {
       bot.running = false;
       setTanSatInRam(false);
+      setBossAttackInRam(false, state);
       stopXmapInRam();
       bot.statusText = "✅ Đã hoàn thành toàn bộ chuỗi nhiệm vụ!";
       return;
@@ -897,6 +1316,7 @@
     // 1. KIỂM TRA NHÂN VẬT CHẾT -> TỰ ĐỘNG BẤM "KIỆT SỨC" & CHỌN "VỀ NHÀ" TRỰC TIẾP TRONG RAM
     if (state.isDie) {
       setTanSatInRam(false);
+      setBossAttackInRam(false, state);
       stopXmapInRam();
       if (bot.options.autoGoback) {
         setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
@@ -912,14 +1332,16 @@
     // 2. NẾU ĐANG CHUYỂN MAP HOẶC ĐANG TẢI BẢN ĐỒ -> ĐỢI TẢI XONG, TẮT TÀN SÁT
     if (state.isChangingMap || state.isInfoDlgShowing) {
       setTanSatInRam(false);
+      setBossAttackInRam(false, state);
       bot.statusText = `⏳ Đang chuyển bản đồ (tới ${targetMapName})...`;
       return;
     }
 
-    // 3. NẾU ĐANG Ở TRONG NHÀ (MAP 21, 22, 23): TỰ ĂN ĐẬU HỒI HP/KI VÀ TỰ RỜI KHỎI NHÀ
+    // 3. NẾU ĐANG Ở TRONG NHÀ (MAP 21, 22, 23) MÀ ĐÍCH ĐẾN Ở NGOÀI NHÀ: TỰ ĂN ĐẬU HỒI HP/KI VÀ TỰ RỜI KHỎI NHÀ
     const isInsideHouse = state.mapId === 21 || state.mapId === 22 || state.mapId === 23;
     if (isInsideHouse && targetMapId !== state.mapId) {
       setTanSatInRam(false);
+      setBossAttackInRam(false, state);
 
       // 3a. Nếu vừa hồi sinh về nhà mà HP hoặc KI dưới 75%, tự động ăn Đậu thần trước khi đi
       if (state.cHPFull > 0 && (state.cHP < state.cHPFull * 0.75 || state.cMP < state.cMPFull * 0.75)) {
@@ -956,6 +1378,7 @@
       if (state.tanSat) {
         setTanSatInRam(false);
       }
+      setBossAttackInRam(false, state);
 
       const xmapCtrlReady = state.ptrs.xmapCtrlStatic !== 0;
       const needRetrigger =
@@ -979,7 +1402,7 @@
       stopXmapInRam();
     }
 
-    // Tự động ăn đậu nếu HP hoặc KI tụt dưới 45% khi đang đánh quái
+    // Tự động ăn đậu nếu HP hoặc KI tụt dưới 45% khi đang đánh quái/trùm
     if (state.cHPFull > 0 && (state.cHP < state.cHPFull * 0.45 || state.cMP < state.cMPFull * 0.45)) {
       if (!bot.lastBeanTime || now - bot.lastBeanTime > 600) {
         useBeanInRam();
@@ -987,26 +1410,49 @@
       }
     }
 
-    if (req.targetKills <= 0) {
+    // 6. XỬ LÝ BƯỚC BÁO CÁO / NÓI CHUYỆN VỚI NPC TỰ ĐỘNG TRONG RAM
+    if (req.isNpcStep) {
       setTanSatInRam(false);
-      if (!req.isAutoRam) {
-        bot.statusText = `📍 Đã tới ${targetMapName} (${targetMapId})! Chuyển bước tiếp theo...`;
-        bot.stageIndex++;
-        resetStageTracking();
-      } else {
-        bot.statusText = `📍 Đã có mặt tại ${targetMapName} (${targetMapId}) theo yêu cầu nhiệm vụ: ${req.stepName}`;
+      setBossAttackInRam(false, state);
+      if (!bot.lastNpcTalkTime || now - bot.lastNpcTalkTime > 380) {
+        bot.statusText = autoTalkAndReportNpcInRam(state, req.stepName);
+        bot.lastNpcTalkTime = now;
       }
       return;
     }
 
-    // 6. KIỂM TRA BOSS TRONG KHU (NẾU BẬT NÉ BOSS)
+    // 7. XỬ LÝ NHIỆM VỤ TIÊU DIỆT TRÙM (BOSS: AKKUMAN / TAMBORINE / DRUM / TÀU PẢY PẢY / KUKU...)
+    if (req.isBossStep) {
+      if (bot.options.autoGoback) {
+        setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
+      }
+      const hasBossChar = setBossAttackInRam(true, state, req.stepName);
+      // Bật thêm Tàn Sát để đánh cả trường hợp Trùm là Mob hoặc hỗ trợ dọn quái quanh Trùm
+      if (!state.tanSat) {
+        setTanSatInRam(true, {
+          neSieuQuai: false,
+          vuotDiaHinh: bot.options.vuotDiaHinh,
+          telePem: bot.options.telePem,
+          autoPick: bot.options.autoPick
+        });
+      }
+      bot.statusText = hasBossChar
+        ? `👑 Đang khóa mục tiêu & tiêu diệt Trùm [${req.stepName}] tại ${targetMapName} (Khu ${state.zoneId})!`
+        : `👑 Đang săn Trùm [${req.stepName}] tại ${targetMapName} (Khu ${state.zoneId})...`;
+      return;
+    }
+
+    // Tắt chế độ focusBoss khi làm nhiệm vụ đánh quái thường
+    setBossAttackInRam(false, state);
+
+    // 8. KIỂM TRA BOSS TRONG KHU (NẾU BẬT NÉ BOSS KHI ĐÁNH QUÁI THƯỜNG)
     if (bot.options.avoidBoss && state.bossDetected) {
       setTanSatInRam(false);
       bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong khu ${state.zoneId}! Đang tạm ngưng đánh...`;
       return;
     }
 
-    // 7. CẬP NHẬT BỘ ĐẾM QUÁI TRỰC TIẾP TỪ RAM
+    // 9. CẬP NHẬT BỘ ĐẾM QUÁI TRỰC TIẾP TỪ RAM
     updateKillCounterFromRamMobs(state, targetMapId);
 
     const updatedReq = getActiveTaskRequirement(state);
@@ -1018,7 +1464,7 @@
       return;
     }
 
-    // 8. BẬT TÀN SÁT & CẤU HÌNH GOBACK TRỰC TIẾP TRONG RAM
+    // 10. BẬT TÀN SÁT & CẤU HÌNH GOBACK TRỰC TIẾP TRONG RAM
     if (bot.options.autoGoback) {
       setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
     }
@@ -1032,7 +1478,7 @@
       });
     }
 
-    bot.statusText = `⚔️ [${updatedReq.stepName}] Đang đánh tại ${targetMapName} (Khu ${state.zoneId}): ${updatedReq.currentKills}/${updatedReq.targetKills}`;
+    bot.statusText = `⚔️ [${updatedReq.stepName}] Đang đánh tại ${targetMapName} (Khu ${state.zoneId})${updatedReq.isCollectStep ? ' [Săn nhặt vật phẩm]' : `: ${updatedReq.currentKills}/${updatedReq.targetKills}`}`;
   }
 
   // ============================================================================
@@ -1065,7 +1511,7 @@
 
     container.innerHTML = `
       <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-        <span>🐉 NRO DEEP MEMORY BOT v2.3.1</span>
+        <span>🐉 NRO DEEP MEMORY BOT v2.4.2</span>
         <div style="display:flex; gap:6px; align-items:center;">
           <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
           <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
@@ -1086,7 +1532,9 @@
         <div style="display:flex; flex-direction:column; gap:4px;">
           <label style="font-weight:600; color:#cbd5e1;">Chế độ Nhiệm vụ:</label>
           <select id="nro-sel-preset" style="background:#1e293b; color:#f8fafc; border:1px solid #475569; border-radius:5px; padding:5px 6px; font-size:12px;">
-            <option value="auto_ram_quest">🤖 Tự động 100% theo Nhiệm Vụ trong Game (RAM)</option>
+            <option value="auto_ram_quest">🤖 Tự động 100% theo Nhiệm Vụ trong Game (RAM + Báo cáo NPC)</option>
+            <option value="quest_comic_snail">📚 NV Ốc Truyện Tranh (Một mạch + Tự nhặt & Báo cáo NPC)</option>
+            <option value="boss_quest_trums">👑 NV Tiêu Diệt Trùm: Akkuman (19) → Tamborine (6) → Drum (10)</option>
             <option value="clan_quest_bulon">NV Bang Hội 2: Bulon (30) → Ukulele (34) → Quỷ Mập (38)</option>
             <option value="quest_pigs">NV Săn 3 Loại Heo: Bamboo (27) → Hoa vàng (31) → Rừng cọ (35)</option>
             <option value="custom_single_map">Tùy chỉnh: Xmap tới Map ID & Đánh đủ N quái</option>
@@ -1355,13 +1803,21 @@
     if (req && !req.finished) {
       const destName = MAP_NAMES[req.mapId] || ("Map " + req.mapId);
       hudRefs.stageName.textContent = `${req.stepName} ➔ ${destName} (ID: ${req.mapId})`;
-      hudRefs.progress.textContent = req.targetKills > 0 ? `${req.currentKills} / ${req.targetKills}` : "Di chuyển";
-      const pct = req.targetKills > 0 ? Math.min(100, Math.round((req.currentKills / req.targetKills) * 100)) : 100;
-      hudRefs.bar.style.width = pct + "%";
+      if (req.isCollectStep) {
+        hudRefs.progress.textContent = "Săn nhặt đồ";
+        hudRefs.bar.style.width = "100%";
+      } else if (req.isNpcStep) {
+        hudRefs.progress.textContent = "Báo cáo NPC";
+        hudRefs.bar.style.width = "100%";
+      } else {
+        hudRefs.progress.textContent = req.targetKills > 0 ? `${req.currentKills} / ${req.targetKills}` : "Di chuyển";
+        const pct = req.targetKills > 0 ? Math.min(100, Math.round((req.currentKills / req.targetKills) * 100)) : 100;
+        hudRefs.bar.style.width = pct + "%";
+      }
 
       if (QUEST_PRESETS[bot.presetKey] && QUEST_PRESETS[bot.presetKey].autoFromRam) {
         hudRefs.inpMapId.value = req.mapId;
-        hudRefs.inpKills.value = req.targetKills;
+        hudRefs.inpKills.value = req.isCollectStep ? 1 : req.targetKills;
       } else if (document.activeElement !== hudRefs.inpStage) {
         hudRefs.inpStage.value = bot.stageIndex + 1;
       }
@@ -1371,5 +1827,5 @@
   }
 
   window.__NRO_DEEP_BOT_TIMER__ = setInterval(tickBot, 80);
-  console.log("[NRO Deep Bot v2.3] Đã nạp thành công! Đã mở khóa ModFunc.gI().canUpdate = 1, sửa đọc tiến độ Nhiệm vụ (0/30), tự rời nhà & tự hồi sinh.");
+  console.log("[NRO Deep Bot v2.4.2] Đã nạp thành công! Sửa dứt điểm nhiệm vụ Bái sư: Namếc săn Ốc sên Núi hoa vàng 31 ➔ Sư phụ Guru 13, Trái Đất ➔ Quy Lão 5, Xayda ➔ Vegeta 20.");
 })();
