@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
 // @namespace    https://nroweb.com/
-// @version      2.4.3
+// @version      2.4.4
 // @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch.
 // @author       Antigravity
 // @match        https://nroweb.com/nro/*
@@ -1005,6 +1005,13 @@
     const myCharPtr = state.ptrs.myCharPtr;
     if (!gameCanvasStatic || !myCharPtr) return "Đang đợi GameCanvas...";
 
+    // 0. Nếu lỡ mở bảng Shop sách (Uron) hay Panel: gửi phím ESC & nút Đóng để tắt ngay
+    pressAsciiKeyInRam(27); // Phím ESC đóng bảng shop/menu
+    const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
+    if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
+      HEAPU8[keyPressedPtr + 16 + 12] = 1; // KeyRight / Đóng panel
+    }
+
     // 1. Kiểm tra nếu ChatPopup đang hiện (bấm qua)
     const chatPopupStatic = getStaticFieldsPtr(ADDR.ChatPopup_TypeInfo);
     if (chatPopupStatic) {
@@ -1017,7 +1024,7 @@
       }
     }
 
-    // 2. Kiểm tra nếu Menu chọn hành tinh đang mở
+    // 2. Kiểm tra nếu Menu chọn hành tinh đang mở (GameCanvas.menu tại +196)
     const menuPtr = HEAPU32[(gameCanvasStatic + 196) >> 2];
     if (menuPtr && menuPtr < wasmBuffer.byteLength && HEAPU8[menuPtr + 8] === 1) {
       const menuItemsVec = HEAPU32[(menuPtr + 12) >> 2];
@@ -1025,7 +1032,7 @@
       let bestIdx = -1;
       const pKeywords = {
         0: ["trai dat", "earth"],
-        1: ["namec", "namek", "guru"],
+        1: ["namec", "namek", "nam ec", "guru"],
         2: ["xayda", "saiyan", "vegeta"]
       }[targetPlanet] || [];
 
@@ -1043,33 +1050,52 @@
       }
     }
 
-    // 3. Tìm NPC Tàu vũ trụ trong map hiện tại
+    // 3. Tìm NPC Tàu vũ trụ (TUYỆT ĐỐI LOẠI BỎ URON VÀ CÂY ĐẬU THẦN)
     let targetNpc = null;
     if (state.npcs && state.npcs.length > 0) {
-      targetNpc = state.npcs.find(n => {
-        const name = normalizeText(n.name);
-        return name.includes("tau") || name.includes("phi thuyen") || name.includes("tram") || name.includes("uron");
-      }) || state.npcs.find(n => n.templateId !== 4) || state.npcs[0];
+      // Loại trừ hoàn toàn Uron (bán sách/bùa) và Cây Đậu Thần
+      const candidates = state.npcs.filter(n => {
+        const nNorm = normalizeText(n.name || "");
+        return !nNorm.includes("uron") && !nNorm.includes("dau") && n.templateId !== 4;
+      });
+
+      // 3a. Ưu tiên NPC có tên chứa tàu / phi thuyền / brief / cargo / cui / trạm
+      targetNpc = candidates.find(n => {
+        const nNorm = normalizeText(n.name || "");
+        return (
+          nNorm.includes("tau") ||
+          nNorm.includes("phi thuyen") ||
+          nNorm.includes("brief") ||
+          nNorm.includes("cargo") ||
+          nNorm.includes("cui") ||
+          nNorm.includes("tram")
+        );
+      });
+
+      // 3b. Nếu không khớp tên từ khóa, chọn NPC nằm ở vị trí chiếc tàu vũ trụ (x >= 450)
+      if (!targetNpc) {
+        targetNpc = candidates.find(n => n.x >= 450) || candidates[0];
+      }
     }
 
     if (!targetNpc) {
       return `🔍 Đang tìm Tàu vũ trụ tại ${state.mapName}...`;
     }
 
-    // 4. Áp sát và tương tác với NPC Tàu vũ trụ
+    // 4. Dịch chuyển nhân vật tới sát vị trí Tàu vũ trụ (tránh xa vị trí Uron x=390), gán npcFocus và nhấn Enter
     const dist = Math.hypot(targetNpc.x - state.cx, targetNpc.y - state.cy);
     if (dist > 36 && targetNpc.x > 0 && targetNpc.y > 0) {
       HEAP32[(myCharPtr + 80) >> 2] = targetNpc.x;
       HEAP32[(myCharPtr + 84) >> 2] = targetNpc.y;
     }
 
-    HEAPU32[(myCharPtr + 568) >> 2] = 0;
-    HEAPU32[(myCharPtr + 584) >> 2] = 0;
-    HEAPU32[(myCharPtr + 580) >> 2] = targetNpc.ptr;
+    HEAPU32[(myCharPtr + 568) >> 2] = 0;             // Xóa mobFocus
+    HEAPU32[(myCharPtr + 584) >> 2] = 0;             // Xóa charFocus
+    HEAPU32[(myCharPtr + 580) >> 2] = targetNpc.ptr; // Gán npcFocus = Tàu vũ trụ
 
     pressEnterCenterInRam();
     pressAsciiKeyInRam(13);
-    return `🚀 Đang mở hội thoại Tàu vũ trụ để sang ${PLANET_NAMES[targetPlanet]}...`;
+    return `🚀 Đang mở hội thoại Tàu vũ trụ [${targetNpc.name || ("#" + targetNpc.templateId)}] để sang ${PLANET_NAMES[targetPlanet]}...`;
   }
 
   // Tự động ăn Đậu thần trực tiếp trong RAM (kích hoạt GameScr.doUseHP() qua keyPressed[10] tại Fn 21772 @15428)
@@ -1642,7 +1668,7 @@
 
     container.innerHTML = `
       <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-        <span>🐉 NRO DEEP MEMORY BOT v2.4.3</span>
+        <span>🐉 NRO DEEP MEMORY BOT v2.4.4</span>
         <div style="display:flex; gap:6px; align-items:center;">
           <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
           <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
@@ -1958,5 +1984,5 @@
   }
 
   window.__NRO_DEEP_BOT_TIMER__ = setInterval(tickBot, 80);
-  console.log("[NRO Deep Bot v2.4.3] Đã nạp thành công! Tự động chuyển hành tinh qua Trạm Tàu Vũ Trụ (Xayda 26 ➔ Namếc 25 / Trái Đất 24) hoàn thành báo cáo Trưởng Lão Guru!");
+  console.log("[NRO Deep Bot v2.4.4] Đã nạp thành công! Sửa dứt điểm Tàu vũ trụ (loại bỏ hoàn toàn Uron bán sách, tự động đóng shop & chọn bay sang Namếc/Xayda/Trái Đất).");
 })();
