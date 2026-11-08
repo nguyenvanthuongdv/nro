@@ -1,0 +1,1375 @@
+// ==UserScript==
+// @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
+// @namespace    https://nroweb.com/
+// @version      2.3.1
+// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Mở khóa ModFunc.canUpdate (+8), đọc chuẩn xác Nhiệm vụ (Char.taskMaint), tự rời nhà, tự hồi sinh về nhà ăn đậu & Goback khi chết, Xmap theo MapID thật, đếm chính xác từng con quái.
+// @author       Antigravity
+// @match        https://nroweb.com/nro/*
+// @match        http://nroweb.com/nro/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  "use strict";
+
+  // Cho phép nạp đè bản mới nếu người dùng dán lại vào Console
+  if (window.__NRO_DEEP_BOT_TIMER__) {
+    clearInterval(window.__NRO_DEEP_BOT_TIMER__);
+  }
+  const oldHud = document.getElementById("nro-deep-bot-hud");
+  if (oldHud) oldHud.remove();
+
+  // ============================================================================
+  // 1. ĐỊA CHỈ TYPEINFO & OFFSET CHÍNH XÁC TRONG GAME.WASM (IL2CPP METADATA V29)
+  // ============================================================================
+  const ADDR = {
+    TileMap_TypeInfo: 2563188,        // TileMap class
+    PickMob_TypeInfo: 2561780,        // Mod.XMAP.PickMob class
+    AutoXmap_TypeInfo: 2558776,       // Mod.XMAP.AutoXmap class
+    XmapController_TypeInfo: 2563860, // Mod.XMAP.XmapController class
+    XmapData_TypeInfo: 2563864,       // Mod.XMAP.XmapData class
+    ModFunc_TypeInfo: 2561364,        // ModFunc class (chứa cờ canUpdate tại instance + 8)
+    Char_TypeInfo: 2559056,           // Char class
+    GameScr_TypeInfo: 2560084,        // GameScr class
+    GameCanvas_TypeInfo: 2560064,     // GameCanvas class
+    InfoDlg_TypeInfo: 2560820,        // InfoDlg class
+    Mob_TypeInfo: 2561352             // Mob class
+  };
+
+  // Danh sách tên Map chuẩn trong Ngọc Rồng
+  const MAP_NAMES = {
+    0: "Làng Aru", 1: "Đồi hoa cúc", 2: "Thung lũng tre", 3: "Rừng nấm", 4: "Rừng xương",
+    5: "Đảo Kamê", 6: "Đông Karin", 7: "Làng Mori", 8: "Đồi nấm tím", 9: "Thị trấn Moori",
+    10: "Thung lũng Namếc", 11: "Thung lũng Maima", 12: "Vực maima", 13: "Đảo Guru",
+    14: "Làng Kakarot", 15: "Đồi hoang", 16: "Làng Plant", 17: "Rừng nguyên sinh",
+    18: "Rừng thông Xayda", 19: "Thành phố Vegeta", 20: "Vách núi đen",
+    21: "Nhà Gôhan", 22: "Nhà Moori", 23: "Nhà Broly",
+    24: "Trạm tàu vũ trụ Trái Đất", 25: "Trạm tàu vũ trụ Namếc", 26: "Trạm tàu vũ trụ Xayda",
+    27: "Rừng Bamboo", 28: "Rừng dương xỉ", 29: "Nam Kamê", 30: "Đảo Bulông",
+    31: "Núi hoa vàng", 32: "Núi hoa tím", 33: "Nam Guru", 34: "Đông Nam Guru",
+    35: "Rừng cọ", 36: "Rừng đá", 37: "Thung lũng đen", 38: "Bờ vực đen",
+    42: "Vách núi Aru", 43: "Vách núi Moori", 44: "Vách núi Kakarot",
+    45: "Thần điện", 46: "Tháp Karin", 47: "Rừng Karin",
+    52: "Đại hội võ thuật", 84: "Siêu thị"
+  };
+
+  function normalizeText(s) {
+    return (s || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .trim();
+  }
+
+  // Bảng ánh xạ tự động từ tên Quái / bước Nhiệm vụ trong RAM -> Map ID chuẩn xác 100%
+  function resolveQuestStepToMapId(stepText, detailText, cgender) {
+    const stepNorm = normalizeText(stepText);
+    const detailNorm = normalizeText(detailText);
+
+    // 1. Nhiệm vụ Bang hội 2 & các quái đặc trưng:
+    if (stepNorm.includes("bulon")) return 30;        // Bulon tại Đảo Bulông (Trái Đất) - Map ID 30
+    if (stepNorm.includes("ukulele")) return 34;      // Ukulele tại Đông Nam Guru (Namếc) - Map ID 34
+    if (stepNorm.includes("quy map")) return 38;      // Quỷ mập tại Bờ Vực Đen (Xayda) - Map ID 38
+
+    // 2. Nhiệm vụ 3 loại Heo:
+    if (stepNorm.includes("heo rung")) return 27;     // Rừng Bamboo - Map ID 27
+    if (stepNorm.includes("heo da xanh")) return 31;  // Núi hoa vàng - Map ID 31
+    if (stepNorm.includes("heo xayda")) return 35;    // Rừng cọ - Map ID 35
+
+    // 3. Các quái nhiệm vụ chính tuyến phổ biến:
+    if (stepNorm.includes("moc nhan")) return cgender === 0 ? 0 : (cgender === 1 ? 7 : 14);
+    if (stepNorm.includes("khung long me")) return 2;
+    if (stepNorm.includes("khung long")) return 1;
+    if (stepNorm.includes("lon loi me")) return 9;
+    if (stepNorm.includes("lon loi")) return 8;
+    if (stepNorm.includes("quy dia nguc")) return 16;
+    if (stepNorm.includes("quy dat")) return 15;
+    if (stepNorm.includes("than lan me")) return 4;
+    if (stepNorm.includes("than lan bay")) return 3;
+    if (stepNorm.includes("phi long me")) return 12;
+    if (stepNorm.includes("phi long")) return 10;
+    if (stepNorm.includes("quy bay me")) return 18;
+    if (stepNorm.includes("quy bay")) return 17;
+    if (stepNorm.includes("than lan xanh")) return 29;
+    if (stepNorm.includes("oc muon hon")) return 33;
+    if (stepNorm.includes("oc sen")) return 31;
+
+    // 4. Báo cáo nhiệm vụ / Gặp NPC:
+    if (
+      stepNorm.includes("bao cao") ||
+      stepNorm.includes("ong gohan") ||
+      stepNorm.includes("ong moori") ||
+      stepNorm.includes("ong paragus") ||
+      stepNorm.includes("ve nha")
+    ) {
+      if (stepNorm.includes("quy lao") || stepNorm.includes("kame")) return 5;
+      if (stepNorm.includes("bo mong") || stepNorm.includes("karin")) return 47;
+      return 21 + (cgender || 0);
+    }
+    if (stepNorm.includes("quy lao") || stepNorm.includes("dao kame")) return 5;
+    if (stepNorm.includes("bo mong") || stepNorm.includes("rung karin")) return 47;
+
+    // 5. Dò trực tiếp tên Map trong chuỗi stepText hoặc detailText
+    for (const [idStr, mName] of Object.entries(MAP_NAMES)) {
+      const mNorm = normalizeText(mName);
+      if (mNorm.length >= 5 && (stepNorm.includes(mNorm) || detailNorm.includes(mNorm))) {
+        return Number(idStr);
+      }
+    }
+
+    return null;
+  }
+
+  // ============================================================================
+  // 2. KỊCH BẢN NHIỆM VỤ (CHẾ ĐỘ TỰ ĐỘNG ĐỌC RAM + CÁC PRESET CỐ ĐỊNH)
+  // ============================================================================
+  const QUEST_PRESETS = {
+    "auto_ram_quest": {
+      name: "🤖 Tự động 100% theo Nhiệm Vụ trong Game (Đọc trực tiếp RAM)",
+      autoFromRam: true,
+      loop: true,
+      stages: []
+    },
+    "clan_quest_bulon": {
+      name: "NV Bang Hội 2: Bulon (Map 30) → Ukulele (Map 34) → Quỷ Mập (Map 38)",
+      loop: true,
+      stages: [
+        {
+          name: "Tiêu diệt Bulon (Đảo Bulông - Trái Đất)",
+          mapId: 30,        // Đảo Bulông (Trái Đất)
+          targetKills: 30,
+          mobNameHint: "Bulon"
+        },
+        {
+          name: "Tiêu diệt Ukulele (Đông Nam Guru - Namếc)",
+          mapId: 34,        // Đông Nam Guru (Namếc)
+          targetKills: 30,
+          mobNameHint: "Ukulele"
+        },
+        {
+          name: "Tiêu diệt Quỷ Mập (Bờ Vực Đen - Xayda)",
+          mapId: 38,        // Bờ Vực Đen (Xayda)
+          targetKills: 30,
+          mobNameHint: "Quỷ mập"
+        },
+        {
+          name: "Quay về Đảo Kamê hoàn thành",
+          mapId: 5,         // Đảo Kamê
+          targetKills: 0
+        }
+      ]
+    },
+    "quest_pigs": {
+      name: "NV Săn 3 Loại Heo: Rừng Bamboo (27) → Núi hoa vàng (31) → Rừng cọ (35)",
+      loop: false,
+      stages: [
+        {
+          name: "Đánh Heo Rừng (Rừng Bamboo)",
+          mapId: 27,
+          targetKills: 20,
+          mobNameHint: "Heo rừng"
+        },
+        {
+          name: "Đánh Heo Da Xanh (Núi hoa vàng)",
+          mapId: 31,
+          targetKills: 20,
+          mobNameHint: "Heo da xanh"
+        },
+        {
+          name: "Đánh Heo Xayda (Rừng cọ)",
+          mapId: 35,
+          targetKills: 20,
+          mobNameHint: "Heo Xayda"
+        },
+        {
+          name: "Quay về Nhà báo cáo nhiệm vụ",
+          mapId: "HOME",
+          targetKills: 0
+        }
+      ]
+    },
+    "custom_single_map": {
+      name: "Tùy chỉnh: Xmap tới Map ID & Đánh đủ N con quái",
+      loop: true,
+      stages: [
+        {
+          name: "Tàn sát tại Map chỉ định",
+          mapId: 30,
+          targetKills: 30,
+          mobNameHint: ""
+        }
+      ]
+    }
+  };
+
+  // ============================================================================
+  // 3. HOOK WEBGLL2 ĐỂ BẮT TRỰC TIẾP WASM MEMORY BUFFER (HEAPU8 / HEAP32 / F64)
+  // ============================================================================
+  let wasmBuffer = null;
+  let wasmView = null;
+  let HEAP8 = null;
+  let HEAPU8 = null;
+  let HEAP16 = null;
+  let HEAPU16 = null;
+  let HEAP32 = null;
+  let HEAPU32 = null;
+
+  function updateTypedArrays(buf) {
+    if (!buf || wasmBuffer === buf) return;
+    wasmBuffer = buf;
+    wasmView = new DataView(buf);
+    HEAP8 = new Int8Array(buf);
+    HEAPU8 = new Uint8Array(buf);
+    HEAP16 = new Int16Array(buf);
+    HEAPU16 = new Uint16Array(buf);
+    HEAP32 = new Int32Array(buf);
+    HEAPU32 = new Uint32Array(buf);
+    console.log("[NRO Deep Bot v2.2] Đã kết nối trực tiếp vào bộ nhớ WASM (" + (buf.byteLength / (1024 * 1024)).toFixed(1) + " MB)!");
+  }
+
+  if (typeof WebGL2RenderingContext !== "undefined") {
+    if (!WebGL2RenderingContext.prototype.__origBufferSubData) {
+      WebGL2RenderingContext.prototype.__origBufferSubData = WebGL2RenderingContext.prototype.bufferSubData;
+    }
+    const origBufferSubData = WebGL2RenderingContext.prototype.__origBufferSubData;
+    WebGL2RenderingContext.prototype.bufferSubData = function (target, offset, srcData, srcOffset, length) {
+      if (srcData && srcData.buffer && srcData.buffer.byteLength > 16 * 1024 * 1024) {
+        if (wasmBuffer !== srcData.buffer) {
+          updateTypedArrays(srcData.buffer);
+        }
+      }
+      return origBufferSubData.apply(this, arguments);
+    };
+  }
+
+  // ============================================================================
+  // 4. CÁC HÀM ĐỌC / GHI TRỰC TIẾP RAM CỦA GAME.WASM (CHUẨN FLOAT64 & IL2CPP)
+  // ============================================================================
+  function isMemoryReady() {
+    if (!wasmBuffer) return false;
+    if (wasmBuffer.detached) {
+      wasmBuffer = null;
+      wasmView = null;
+      return false;
+    }
+    return true;
+  }
+
+  function readF64(byteOffset) {
+    if (!isMemoryReady() || byteOffset <= 0 || byteOffset + 8 > wasmBuffer.byteLength) return 0;
+    const val = wasmView.getFloat64(byteOffset, true);
+    if (!Number.isFinite(val)) return 0;
+    return Math.floor(val);
+  }
+
+  function getStaticFieldsPtr(typeInfoAddr) {
+    if (!isMemoryReady()) return 0;
+    const klassPtr = HEAPU32[typeInfoAddr >> 2];
+    if (!klassPtr || klassPtr >= wasmBuffer.byteLength) return 0;
+    const staticPtr = HEAPU32[(klassPtr + 92) >> 2];
+    if (!staticPtr || staticPtr >= wasmBuffer.byteLength) return 0;
+    return staticPtr;
+  }
+
+  // QUAN TRỌNG NHẤT: Trong GameScr.update() (Fn 21810 @799), AutoXmap.Update() (Fn 22060)
+  // bị khóa sau điều kiện `if (ModFunc.gI().canUpdate)` (tức `HEAPU8[modFuncInstance + 8] != 0`).
+  // Vì HttpClient.GetStringAsync trong WebGL bị lỗi CORS nên canUpdate mặc định bị kẹt = 0!
+  // Hàm này mở khóa trực tiếp `ModFunc.gI().canUpdate = 1` trong RAM!
+  function ensureModFuncCanUpdate() {
+    const modFuncStatic = getStaticFieldsPtr(ADDR.ModFunc_TypeInfo);
+    if (!modFuncStatic) return false;
+    const modFuncInstance = HEAPU32[(modFuncStatic + 0) >> 2];
+    if (!modFuncInstance || modFuncInstance >= wasmBuffer.byteLength) return false;
+    if (HEAPU8[modFuncInstance + 8] === 0) {
+      HEAPU8[modFuncInstance + 8] = 1; // ModFunc.gI().canUpdate = true!
+      console.log("[NRO Deep Bot v2.2] Đã mở khóa ModFunc.gI().canUpdate = 1 trong RAM (Kích hoạt vòng lặp AutoXmap.Update)!");
+    }
+    return true;
+  }
+
+  function readIl2CppString(strPtr) {
+    if (!isMemoryReady() || !strPtr || strPtr >= wasmBuffer.byteLength) return "";
+    const len = HEAP32[(strPtr + 8) >> 2];
+    if (len <= 0 || len > 1024) return "";
+    const startIdx = (strPtr + 12) >> 1;
+    if ((startIdx + len) * 2 >= wasmBuffer.byteLength) return "";
+    let out = "";
+    for (let i = 0; i < len; i++) {
+      out += String.fromCharCode(HEAPU16[startIdx + i]);
+    }
+    return out;
+  }
+
+  function readIl2CppStringArray(arrPtr) {
+    const out = [];
+    if (!isMemoryReady() || !arrPtr || arrPtr >= wasmBuffer.byteLength) return out;
+    const len = HEAP32[(arrPtr + 12) >> 2];
+    if (len <= 0 || len > 100) return out;
+    for (let i = 0; i < len; i++) {
+      const strPtr = HEAPU32[(arrPtr + 16 + i * 4) >> 2];
+      out.push(readIl2CppString(strPtr));
+    }
+    return out;
+  }
+
+  function readMyVector(vecPtr) {
+    const result = [];
+    if (!isMemoryReady() || !vecPtr || vecPtr >= wasmBuffer.byteLength) return result;
+    const listPtr = HEAPU32[(vecPtr + 8) >> 2];
+    if (!listPtr || listPtr >= wasmBuffer.byteLength) return result;
+    const itemsArrayPtr = HEAPU32[(listPtr + 8) >> 2];
+    const size = HEAP32[(listPtr + 12) >> 2];
+    if (!itemsArrayPtr || size <= 0 || size > 500) return result;
+    for (let i = 0; i < size; i++) {
+      const elemPtr = HEAPU32[(itemsArrayPtr + 16 + i * 4) >> 2];
+      if (elemPtr && elemPtr < wasmBuffer.byteLength) {
+        result.push(elemPtr);
+      }
+    }
+    return result;
+  }
+
+  function getMobTemplateName(templateId) {
+    if (!isMemoryReady() || templateId < 0 || templateId > 500) return "";
+    const mobStatic = getStaticFieldsPtr(ADDR.Mob_TypeInfo);
+    if (!mobStatic) return "";
+    const arrTemplatePtr = HEAPU32[(mobStatic + 0) >> 2];
+    if (!arrTemplatePtr || arrTemplatePtr >= wasmBuffer.byteLength) return "";
+    const len = HEAP32[(arrTemplatePtr + 12) >> 2];
+    if (templateId >= len) return "";
+    const tplPtr = HEAPU32[(arrTemplatePtr + 16 + templateId * 4) >> 2];
+    if (!tplPtr || tplPtr >= wasmBuffer.byteLength) return "";
+    for (const off of [16, 20, 24, 12]) {
+      const s = readIl2CppString(HEAPU32[(tplPtr + off) >> 2]);
+      if (s && s.length >= 2) return s;
+    }
+    return "Mob#" + templateId;
+  }
+
+  // Đọc toàn bộ trạng thái thực tế của Game trong RAM
+  function readGameState() {
+    if (!isMemoryReady()) return null;
+
+    // Luôn đảm bảo ModFunc.gI().canUpdate = 1 để GameScr.update() gọi AutoXmap.Update() mỗi frame
+    ensureModFuncCanUpdate();
+
+    const tileMapStatic = getStaticFieldsPtr(ADDR.TileMap_TypeInfo);
+    const pickMobStatic = getStaticFieldsPtr(ADDR.PickMob_TypeInfo);
+    const autoXmapStatic = getStaticFieldsPtr(ADDR.AutoXmap_TypeInfo);
+    const xmapCtrlStatic = getStaticFieldsPtr(ADDR.XmapController_TypeInfo);
+    const xmapDataStatic = getStaticFieldsPtr(ADDR.XmapData_TypeInfo);
+    const charStatic = getStaticFieldsPtr(ADDR.Char_TypeInfo);
+    const gameScrStatic = getStaticFieldsPtr(ADDR.GameScr_TypeInfo);
+    const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
+    const infoDlgStatic = getStaticFieldsPtr(ADDR.InfoDlg_TypeInfo);
+
+    if (!tileMapStatic || !charStatic || !gameScrStatic) return null;
+
+    const mapId = HEAP32[(tileMapStatic + 124) >> 2];
+    const zoneId = HEAP32[(tileMapStatic + 132) >> 2];
+    const planetId = HEAP32[(tileMapStatic + 152) >> 2];
+    const rawMapName = readIl2CppString(HEAPU32[(tileMapStatic + 116) >> 2]);
+    const mapName = rawMapName || MAP_NAMES[mapId] || ("Map " + mapId);
+
+    const myCharPtr = HEAPU32[(charStatic + 88) >> 2];
+    if (!myCharPtr || myCharPtr >= wasmBuffer.byteLength) return null;
+
+    const cx = HEAP32[(myCharPtr + 80) >> 2];
+    const cy = HEAP32[(myCharPtr + 84) >> 2];
+    const statusMe = HEAP32[(myCharPtr + 108) >> 2];
+    const cgender = HEAP32[(myCharPtr + 116) >> 2]; // 0: Trái Đất, 1: Namếc, 2: Xayda
+
+    const cMP = readF64(myCharPtr + 184);
+    const cHP = readF64(myCharPtr + 192);
+    const cHPFull = readF64(myCharPtr + 248);
+    const cMPFull = readF64(myCharPtr + 256);
+
+    const isDie = statusMe === 14 || HEAPU8[myCharPtr + 310] === 1 || (cHPFull > 0 && cHP <= 0);
+    const isChangingMap = HEAPU8[myCharPtr + 34] === 1;
+    const mobFocusPtr = HEAPU32[(myCharPtr + 568) >> 2];
+
+    const isInfoDlgShowing = infoDlgStatic ? (HEAPU8[infoDlgStatic + 16] === 1) : false;
+
+    const tanSat = pickMobStatic ? (HEAPU8[pickMobStatic + 8] === 1) : false;
+    const neSieuQuai = pickMobStatic ? (HEAPU8[pickMobStatic + 10] === 1) : false;
+    const vuotDiaHinh = pickMobStatic ? (HEAPU8[pickMobStatic + 11] === 1) : false;
+    const telePem = pickMobStatic ? (HEAPU8[pickMobStatic + 12] === 1) : false;
+    const isGoBack = pickMobStatic ? (HEAPU8[pickMobStatic + 13] === 1) : false;
+    const mapGoback = pickMobStatic ? HEAP32[(pickMobStatic + 16) >> 2] : -1;
+    const zoneGoback = pickMobStatic ? HEAP32[(pickMobStatic + 20) >> 2] : -1;
+
+    const isXmapRunning = autoXmapStatic ? (HEAPU8[autoXmapStatic + 0] === 1) : false;
+    const xmapTargetId = xmapCtrlStatic ? HEAP32[(xmapCtrlStatic + 20) >> 2] : -1;
+
+    // Đọc danh sách Quái trong Map (GameScr.vMob) - chuẩn Fn 22119: status (+96) >= 2 && f64 hp (+64) > 0
+    const vMobPtr = HEAPU32[(gameScrStatic + 256) >> 2];
+    const mobPtrs = readMyVector(vMobPtr);
+    const mobs = [];
+    let aliveMobs = 0;
+
+    for (let i = 0; i < mobPtrs.length; i++) {
+      const mPtr = mobPtrs[i];
+      const hp = readF64(mPtr + 64);
+      const maxHp = readF64(mPtr + 72);
+      const mx = HEAP32[(mPtr + 80) >> 2] || HEAP32[(mPtr + 112) >> 2];
+      const my = HEAP32[(mPtr + 84) >> 2] || HEAP32[(mPtr + 116) >> 2];
+      const status = HEAP32[(mPtr + 96) >> 2];
+      const mobId = HEAP32[(mPtr + 152) >> 2];
+      const templateId = HEAP32[(mPtr + 192) >> 2];
+      const isMobMe = HEAPU8[mPtr + 228] === 1;
+      const isBusy = HEAPU8[mPtr + 231] === 1;
+      const alive = !isMobMe && !isBusy && status >= 2 && hp > 0;
+      if (alive) aliveMobs++;
+
+      mobs.push({
+        ptr: mPtr,
+        mobId,
+        templateId,
+        hp,
+        maxHp,
+        status,
+        x: mx,
+        y: my,
+        alive,
+        isFocused: mPtr === mobFocusPtr
+      });
+    }
+
+    // Đọc danh sách Nhân vật / Boss trong khu (GameScr.vCharInMap)
+    const vCharPtr = HEAPU32[(gameScrStatic + 240) >> 2];
+    const charPtrs = readMyVector(vCharPtr);
+    let bossDetected = null;
+    for (let i = 0; i < charPtrs.length; i++) {
+      const cPtr = charPtrs[i];
+      if (cPtr === myCharPtr) continue;
+      const charHP = readF64(cPtr + 192);
+      const charHPFull = readF64(cPtr + 248);
+      const cTypePk = HEAP8[cPtr + 142];
+      const cName = readIl2CppString(HEAPU32[(cPtr + 148) >> 2]);
+      if ((cTypePk === 5 || cName.toUpperCase().includes("BOSS")) && charHP > 0) {
+        bossDetected = { ptr: cPtr, name: cName || "BOSS", hp: charHP, maxHp: charHPFull };
+      }
+    }
+
+    // Đọc chi tiết Nhiệm vụ đang làm trong RAM (Char.taskMaint tại myCharPtr + 500)
+    // Offset chuẩn xác đã kiểm chứng trên ảnh thực tế:
+    // +8: index (int32), +12: taskId (int16), +16: max (short[]), +20: counts (short[]),
+    // +24: names (string[]), +28: details (string[]), +32: subNames (string[]), +36: contentInfo (string[]), +40: count (int16)
+    let taskMaint = null;
+    const taskPtr = HEAPU32[(myCharPtr + 500) >> 2];
+    if (taskPtr && taskPtr < wasmBuffer.byteLength) {
+      const index = HEAP32[(taskPtr + 8) >> 2];
+      const taskId = HEAP16[(taskPtr + 12) >> 1];
+      const maxArrPtr = HEAPU32[(taskPtr + 16) >> 2];
+      const countsArrPtr = HEAPU32[(taskPtr + 20) >> 2];
+      const names = readIl2CppStringArray(HEAPU32[(taskPtr + 24) >> 2]);
+      const details = readIl2CppStringArray(HEAPU32[(taskPtr + 28) >> 2]);
+      const subNames = readIl2CppStringArray(HEAPU32[(taskPtr + 32) >> 2]);
+      const contentInfo = readIl2CppStringArray(HEAPU32[(taskPtr + 36) >> 2]);
+
+      let curCount = 0;
+      let maxCount = 0;
+
+      if (countsArrPtr && countsArrPtr < wasmBuffer.byteLength && index >= 0 && index < 20) {
+        const cVal = HEAP16[((countsArrPtr + 16) >> 1) + index];
+        if (cVal >= 0 && cVal < 10000) curCount = cVal;
+      }
+      if (maxArrPtr && maxArrPtr < wasmBuffer.byteLength && index >= 0 && index < 20) {
+        const mVal = HEAP16[((maxArrPtr + 16) >> 1) + index];
+        if (mVal >= 0 && mVal < 10000) maxCount = mVal;
+      }
+
+      const rawStepName = (subNames[index] || "").replace(/^\s*-\s*/, "").trim();
+      const activeDetail = details[index] || details[0] || "";
+      const questTitle = names[0] || ("Nhiệm vụ #" + taskId);
+
+      // Nếu chuỗi subNames[index] có dạng "(0/30)" thì ưu tiên lấy trực tiếp từ chuỗi hiển thị trên bảng nhiệm vụ
+      const match = rawStepName.match(/\((\d+)\s*\/\s*(\d+)\)/);
+      if (match) {
+        curCount = parseInt(match[1], 10);
+        maxCount = parseInt(match[2], 10);
+      }
+      const cleanStepName = rawStepName.replace(/\s*\(\d+\s*\/\s*\d+\)\s*$/, "").trim();
+
+      taskMaint = {
+        taskId,
+        index,
+        count: curCount,
+        max: maxCount,
+        questTitle,
+        activeStepName: cleanStepName || rawStepName,
+        rawStepName,
+        activeDetail,
+        subNames,
+        details,
+        contentInfo
+      };
+    }
+
+    return {
+      ptrs: {
+        tileMapStatic,
+        pickMobStatic,
+        autoXmapStatic,
+        xmapCtrlStatic,
+        xmapDataStatic,
+        charStatic,
+        gameScrStatic,
+        gameCanvasStatic,
+        myCharPtr
+      },
+      mapId,
+      mapName,
+      zoneId,
+      planetId,
+      cx,
+      cy,
+      cgender,
+      cHP,
+      cHPFull,
+      cMP,
+      cMPFull,
+      statusMe,
+      isDie,
+      isChangingMap,
+      isInfoDlgShowing,
+      tanSat,
+      neSieuQuai,
+      vuotDiaHinh,
+      telePem,
+      isGoBack,
+      mapGoback,
+      zoneGoback,
+      isXmapRunning,
+      xmapTargetId,
+      mobs,
+      aliveMobs,
+      bossDetected,
+      taskMaint
+    };
+  }
+
+  // ============================================================================
+  // 5. ĐIỀU KHIỂN TRỰC TIẾP TRONG RAM (TÀN SÁT, XMAP, HỒI SINH, RỜI NHÀ, ĂN ĐẬU)
+  // ============================================================================
+  // Gửi mã phím ASCII trực tiếp vào GameCanvas.keyAsciiPress (+536) chuẩn Fn 32922
+  function pressAsciiKeyInRam(charCode) {
+    const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
+    if (!gameCanvasStatic) return false;
+    HEAP32[(gameCanvasStatic + 536) >> 2] = charCode; // GameCanvas.keyAsciiPress
+    return true;
+  }
+
+  // Bấm phím chọn nút Giữa (Enter / Kiệt sức / Xác nhận Menu) trực tiếp trong GameCanvas.keyPressed (+60)
+  // Chuẩn Fn 32923 (mapKeyPress case -5) & Fn 21772 (GameScr.updateKey @1540..@1867)
+  function triggerReviveOrConfirmInRam() {
+    const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
+    if (!gameCanvasStatic) return false;
+
+    // 1. Nếu Menu "Về nhà / Hồi sinh tại chỗ" đang mở (GameCanvas.menu tại +196, showMenu tại +8):
+    // Chọn mục 0 ("Về nhà") và bấm xác nhận
+    const menuPtr = HEAPU32[(gameCanvasStatic + 196) >> 2];
+    if (menuPtr && menuPtr < wasmBuffer.byteLength && HEAPU8[menuPtr + 8] === 1) {
+      HEAP32[(menuPtr + 16) >> 2] = 0; // menuSelectedItem = 0 ("Về nhà")
+    }
+
+    // 2. Bật cờ nhấn phím Enter / Center softkey (index 5, 15, 25 trong mảng GameCanvas.keyPressed tại +60)
+    const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
+    if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
+      HEAPU8[keyPressedPtr + 16 + 5] = 1;
+      HEAPU8[keyPressedPtr + 16 + 15] = 1;
+      HEAPU8[keyPressedPtr + 16 + 25] = 1;
+    }
+    return true;
+  }
+
+  // Tự động ăn Đậu thần trực tiếp trong RAM (kích hoạt GameScr.doUseHP() qua keyPressed[10] tại Fn 21772 @15428)
+  function useBeanInRam() {
+    const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
+    if (!gameCanvasStatic) return false;
+    const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
+    if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
+      HEAPU8[keyPressedPtr + 16 + 10] = 1; // keyPressed[10] = true -> GameScr.gI().doUseHP()
+    }
+    return true;
+  }
+
+  // Tự động rời khỏi Nhà (Map 21, 22, 23) ra Làng (Map 0, 7, 14) bằng ManualXmap.LoadMapLeft ('j' = 106)
+  // kết hợp dịch chuyển nhân vật ra cửa nhà (x = 35, y = 336)
+  function forceExitHouseInRam(myCharPtr) {
+    if (myCharPtr && myCharPtr < wasmBuffer.byteLength) {
+      const cx = HEAP32[(myCharPtr + 80) >> 2];
+      if (cx > 60) {
+        HEAP32[(myCharPtr + 80) >> 2] = 35;  // Đặt tọa độ X ngay cửa trái của nhà
+        HEAP32[(myCharPtr + 84) >> 2] = 336; // Đặt tọa độ Y mặt đất nhà
+      }
+    }
+    // Gửi phím 'j' (106) vào GameCanvas.keyAsciiPress (+536) để gọi ManualXmap.LoadMapLeft()
+    pressAsciiKeyInRam(106);
+  }
+
+  function setTanSatInRam(enable, options = {}) {
+    const pickMobStatic = getStaticFieldsPtr(ADDR.PickMob_TypeInfo);
+    if (!pickMobStatic) return false;
+
+    HEAPU8[pickMobStatic + 8] = enable ? 1 : 0; // PickMob.tanSat
+    if (options.neSieuQuai !== undefined) {
+      HEAPU8[pickMobStatic + 10] = options.neSieuQuai ? 1 : 0;
+    }
+    if (options.vuotDiaHinh !== undefined) {
+      HEAPU8[pickMobStatic + 11] = options.vuotDiaHinh ? 1 : 0;
+    }
+    if (options.telePem !== undefined) {
+      HEAPU8[pickMobStatic + 12] = options.telePem ? 1 : 0;
+    }
+    if (options.autoPick !== undefined) {
+      HEAPU8[pickMobStatic + 44] = options.autoPick ? 1 : 0;
+    }
+    // Cấu hình tự động bơm HP/MP bằng Đậu thần ở mức 50% trong PickMobController (+68, +72)
+    if (enable) {
+      if (HEAP32[(pickMobStatic + 68) >> 2] <= 0) HEAP32[(pickMobStatic + 68) >> 2] = 50; // hpBuff = 50%
+      if (HEAP32[(pickMobStatic + 72) >> 2] <= 0) HEAP32[(pickMobStatic + 72) >> 2] = 50; // mpBuff = 50%
+    }
+    return true;
+  }
+
+  function setGobackInRam(enable, mapId, zoneId, x, y) {
+    const pickMobStatic = getStaticFieldsPtr(ADDR.PickMob_TypeInfo);
+    if (!pickMobStatic) return false;
+
+    HEAPU8[pickMobStatic + 13] = enable ? 1 : 0; // PickMob.isGoBack
+    if (mapId !== undefined && mapId >= 0) {
+      HEAP32[(pickMobStatic + 16) >> 2] = mapId;
+    }
+    if (zoneId !== undefined && zoneId >= 0) {
+      HEAP32[(pickMobStatic + 20) >> 2] = zoneId;
+    }
+    if (x !== undefined && x >= 0) {
+      HEAP32[(pickMobStatic + 24) >> 2] = x;
+    }
+    if (y !== undefined && y >= 0) {
+      HEAP32[(pickMobStatic + 28) >> 2] = y;
+    }
+    return true;
+  }
+
+  function startXmapInRam(targetMapId, currentMapId) {
+    // 1. Mở khóa ModFunc.gI().canUpdate = 1 để GameScr.update() chạy AutoXmap.Update()!
+    ensureModFuncCanUpdate();
+
+    const autoXmapStatic = getStaticFieldsPtr(ADDR.AutoXmap_TypeInfo);
+    if (!autoXmapStatic) return false;
+
+    // 2. Tắt Tàn Sát ngay lập tức trước khi di chuyển
+    setTanSatInRam(false);
+
+    // 3. Nếu đang ở trong Nhà (Map 21, 22, 23), tắt dùng Capsule trong AutoXmap (+3, +4)
+    // vì trong Nhà server không cho dùng Capsule khiến XmapData.Load() bị treo chờ bảng Capsule!
+    if (currentMapId === 21 || currentMapId === 22 || currentMapId === 23) {
+      HEAPU8[autoXmapStatic + 3] = 0; // IsUseCapsuleNormal = false
+      HEAPU8[autoXmapStatic + 4] = 0; // IsUseCapsuleVip = false
+    }
+
+    // Giải phóng cờ kẹt IsWaitInfoMapTrans (+25) của XmapData nếu trước đó bị kẹt
+    const xmapDataStatic = getStaticFieldsPtr(ADDR.XmapData_TypeInfo);
+    if (xmapDataStatic) {
+      const xmapDataInstance = HEAPU32[(xmapDataStatic + 0) >> 2];
+      if (xmapDataInstance && xmapDataInstance < wasmBuffer.byteLength) {
+        if (HEAPU8[xmapDataInstance + 25] === 1) {
+          HEAPU8[xmapDataInstance + 25] = 0; // IsWaitInfoMapTrans = false
+          HEAPU8[xmapDataInstance + 24] = 0; // IsLoading = false
+        }
+      }
+    }
+
+    const xmapCtrlStatic = getStaticFieldsPtr(ADDR.XmapController_TypeInfo);
+    if (!xmapCtrlStatic) {
+      // Kích hoạt AutoXmap.IsXmapRunning = 1 để Fn 22060 gọi il2cpp_runtime_class_init(XmapController)
+      HEAPU8[autoXmapStatic + 0] = 1;
+      return true;
+    }
+
+    // 4. Đặt lại toàn bộ trạng thái đường đi của XmapController (chuẩn Fn 22074 + Fn 22083)
+    HEAP32[(xmapCtrlStatic + 20) >> 2] = targetMapId; // IdMapEnd = targetMapId
+    HEAP32[(xmapCtrlStatic + 24) >> 2] = 0;           // WayXmap = null (bắt buộc tính lại lộ trình!)
+    HEAP32[(xmapCtrlStatic + 28) >> 2] = 0;           // IndexWay = 0
+    HEAPU8[xmapCtrlStatic + 32] = 0;                  // IsNextMapFailed = false
+    HEAPU8[xmapCtrlStatic + 33] = 0;                  // IsWait = false
+    HEAPU8[xmapCtrlStatic + 56] = 0;                  // IsWaitNextMap = false
+
+    // 5. Bật cờ chạy Xmap
+    HEAPU8[autoXmapStatic + 0] = 1;                   // AutoXmap.IsXmapRunning = true
+    return true;
+  }
+
+  function stopXmapInRam() {
+    const autoXmapStatic = getStaticFieldsPtr(ADDR.AutoXmap_TypeInfo);
+    const xmapCtrlStatic = getStaticFieldsPtr(ADDR.XmapController_TypeInfo);
+    if (autoXmapStatic) {
+      HEAPU8[autoXmapStatic + 0] = 0;
+    }
+    if (xmapCtrlStatic) {
+      HEAP32[(xmapCtrlStatic + 24) >> 2] = 0;
+    }
+    return true;
+  }
+
+  // ============================================================================
+  // 6. BỘ MÁY TRẠNG THÁI (STATE MACHINE) LÀM NHIỆM VỤ CHÍNH XÁC 100%
+  // ============================================================================
+  const bot = {
+    running: false,
+    presetKey: "auto_ram_quest",
+    stageIndex: 0,
+    stageKilledCount: 0,
+    totalKilledCount: 0,
+    statusText: "Sẵn sàng! Bấm BẮT ĐẦU AUTO để tự động kiểm tra nhiệm vụ & chạy.",
+    lastXmapTriggerTime: 0,
+    lastXmapTargetId: -1,
+    lastMapId: -1,
+    lastTaskStepIndex: -1,
+    mobTracker: new Map(),
+    lastFocusedMobId: -1,
+    options: {
+      neSieuQuai: true,
+      vuotDiaHinh: true,
+      telePem: false,
+      autoPick: true,
+      autoGoback: true,
+      avoidBoss: true
+    }
+  };
+
+  function resolveStageMapId(stage, state) {
+    if (stage.mapId === "HOME") {
+      return 21 + (state.cgender || 0);
+    }
+    return Number(stage.mapId);
+  }
+
+  function resetStageTracking() {
+    bot.stageKilledCount = 0;
+    bot.mobTracker.clear();
+    bot.lastFocusedMobId = -1;
+  }
+
+  function updateKillCounterFromRamMobs(state, targetMapId) {
+    if (state.mapId !== targetMapId || state.isChangingMap || state.isInfoDlgShowing) {
+      bot.mobTracker.clear();
+      return;
+    }
+
+    if (bot.lastMapId !== state.mapId) {
+      bot.mobTracker.clear();
+      bot.lastMapId = state.mapId;
+    }
+
+    for (const m of state.mobs) {
+      if (m.isFocused) {
+        bot.lastFocusedMobId = m.mobId;
+      }
+    }
+
+    for (const m of state.mobs) {
+      const prev = bot.mobTracker.get(m.mobId);
+      const dist = Math.hypot(m.x - state.cx, m.y - state.cy);
+      const wasNearOrFocused =
+        m.isFocused ||
+        m.mobId === bot.lastFocusedMobId ||
+        (state.tanSat && dist < 240) ||
+        (prev && prev.wasTargeted);
+
+      if (prev && prev.alive && !m.alive && prev.wasTargeted) {
+        bot.stageKilledCount++;
+        bot.totalKilledCount++;
+        console.log(
+          `[NRO Deep Bot] Đã hạ quái #${m.mobId} (${getMobTemplateName(m.templateId)}) -> Đếm: ${bot.stageKilledCount}`
+        );
+      }
+
+      bot.mobTracker.set(m.mobId, {
+        alive: m.alive,
+        hp: m.hp,
+        wasTargeted: m.alive ? Boolean(wasNearOrFocused) : false
+      });
+    }
+  }
+
+  function getActiveTaskRequirement(state) {
+    const preset = QUEST_PRESETS[bot.presetKey];
+
+    // CHẾ ĐỘ 1: TỰ ĐỘNG 100% ĐỌC TỪ NHIỆM VỤ ĐANG LÀM TRONG RAM (Char.taskMaint)
+    if (preset && preset.autoFromRam && state.taskMaint) {
+      const tm = state.taskMaint;
+      if (bot.lastTaskStepIndex !== tm.index) {
+        bot.lastTaskStepIndex = tm.index;
+        resetStageTracking();
+      }
+
+      const autoMapId = resolveQuestStepToMapId(tm.activeStepName, tm.activeDetail, state.cgender);
+      if (autoMapId !== null) {
+        const targetKills = tm.max > 0 ? tm.max : 0;
+        const currentKills = tm.max > 0 ? Math.max(tm.count, bot.stageKilledCount) : 0;
+        return {
+          isAutoRam: true,
+          stepName: tm.activeStepName || `Bước ${tm.index}`,
+          mapId: autoMapId,
+          targetKills,
+          currentKills
+        };
+      }
+    }
+
+    // CHẾ ĐỘ 2: CHẠY THEO KỊCH BẢN PRESET HOẶC TÙY CHỈNH
+    const activePreset = (preset && !preset.autoFromRam) ? preset : QUEST_PRESETS["clan_quest_bulon"];
+
+    // Đồng bộ tự động bước đang chạy với bảng Nhiệm vụ trong RAM (nếu nhiệm vụ trong RAM đang chỉ rõ Bulon / Ukulele / Quỷ mập chưa xong)
+    if (state.taskMaint && state.taskMaint.max > 0 && state.taskMaint.count < state.taskMaint.max) {
+      const stepNorm = normalizeText(state.taskMaint.activeStepName);
+      for (let i = 0; i < activePreset.stages.length; i++) {
+        const hint = activePreset.stages[i].mobNameHint;
+        if (hint && stepNorm.includes(normalizeText(hint))) {
+          if (bot.stageIndex !== i) {
+            bot.stageIndex = i;
+            resetStageTracking();
+          }
+          break;
+        }
+      }
+    }
+
+    if (bot.stageIndex >= activePreset.stages.length) {
+      if (activePreset.loop) {
+        bot.stageIndex = 0;
+        resetStageTracking();
+      } else {
+        return { finished: true };
+      }
+    }
+
+    const stage = activePreset.stages[bot.stageIndex];
+    const targetMapId = resolveStageMapId(stage, state);
+
+    let currentKills = bot.stageKilledCount;
+    let targetKills = stage.targetKills || 0;
+    if (state.taskMaint && state.taskMaint.max > 0 && stage.mobNameHint) {
+      const stepNorm = normalizeText(state.taskMaint.activeStepName);
+      const hintNorm = normalizeText(stage.mobNameHint);
+      if (stepNorm.includes(hintNorm)) {
+        targetKills = state.taskMaint.max;
+        // Lấy đúng số lượng thực tế của nhiệm vụ trong RAM nếu taskMaint.count hợp lệ (< max)
+        currentKills = state.taskMaint.count;
+      }
+    }
+
+    return {
+      isAutoRam: false,
+      stepName: stage.name,
+      mapId: targetMapId,
+      targetKills,
+      currentKills
+    };
+  }
+
+  function tickBot() {
+    const state = readGameState();
+    updateHUD(state);
+
+    if (!state || !bot.running) return;
+
+    const req = getActiveTaskRequirement(state);
+    if (!req) return;
+
+    if (req.finished) {
+      bot.running = false;
+      setTanSatInRam(false);
+      stopXmapInRam();
+      bot.statusText = "✅ Đã hoàn thành toàn bộ chuỗi nhiệm vụ!";
+      return;
+    }
+
+    const targetMapId = req.mapId;
+    const targetMapName = MAP_NAMES[targetMapId] || ("Map " + targetMapId);
+    const now = Date.now();
+
+    // 1. KIỂM TRA NHÂN VẬT CHẾT -> TỰ ĐỘNG BẤM "KIỆT SỨC" & CHỌN "VỀ NHÀ" TRỰC TIẾP TRONG RAM
+    if (state.isDie) {
+      setTanSatInRam(false);
+      stopXmapInRam();
+      if (bot.options.autoGoback) {
+        setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
+      }
+      if (!bot.lastReviveTime || now - bot.lastReviveTime > 350) {
+        triggerReviveOrConfirmInRam();
+        bot.lastReviveTime = now;
+      }
+      bot.statusText = `💀 Nhân vật tử trận (HP: 0)! Đang tự bấm "Kiệt sức -> Về nhà" trong RAM để hồi phục & quay lại ${targetMapName}...`;
+      return;
+    }
+
+    // 2. NẾU ĐANG CHUYỂN MAP HOẶC ĐANG TẢI BẢN ĐỒ -> ĐỢI TẢI XONG, TẮT TÀN SÁT
+    if (state.isChangingMap || state.isInfoDlgShowing) {
+      setTanSatInRam(false);
+      bot.statusText = `⏳ Đang chuyển bản đồ (tới ${targetMapName})...`;
+      return;
+    }
+
+    // 3. NẾU ĐANG Ở TRONG NHÀ (MAP 21, 22, 23): TỰ ĂN ĐẬU HỒI HP/KI VÀ TỰ RỜI KHỎI NHÀ
+    const isInsideHouse = state.mapId === 21 || state.mapId === 22 || state.mapId === 23;
+    if (isInsideHouse && targetMapId !== state.mapId) {
+      setTanSatInRam(false);
+
+      // 3a. Nếu vừa hồi sinh về nhà mà HP hoặc KI dưới 75%, tự động ăn Đậu thần trước khi đi
+      if (state.cHPFull > 0 && (state.cHP < state.cHPFull * 0.75 || state.cMP < state.cMPFull * 0.75)) {
+        if (!bot.lastBeanTime || now - bot.lastBeanTime > 450) {
+          useBeanInRam();
+          triggerReviveOrConfirmInRam(); // Thu hoạch / ăn đậu từ Cây Đậu Thần nếu đang đứng cạnh
+          bot.lastBeanTime = now;
+        }
+        bot.statusText = `🌱 Đang ở ${state.mapName}: Tự ăn Đậu thần hồi phục HP (${state.cHP}/${state.cHPFull}) trước khi đi ${targetMapName}...`;
+        // Không kẹt quá 2.5s nếu hết đậu trong hành trang
+        if (!bot.houseEnterTime) bot.houseEnterTime = now;
+        if (now - bot.houseEnterTime < 2500) {
+          return;
+        }
+      } else {
+        bot.houseEnterTime = 0;
+      }
+
+      // 3b. Tự động bước ra khỏi cửa nhà (Map 21->0, 22->7, 23->14) bằng LoadMapLeft ('j' = 106) + dịch chuyển tới cửa (x=35)
+      if (!bot.lastHouseExitTime || now - bot.lastHouseExitTime > 450) {
+        forceExitHouseInRam(state.ptrs.myCharPtr);
+        startXmapInRam(targetMapId, state.mapId);
+        bot.lastHouseExitTime = now;
+        bot.lastXmapTriggerTime = now;
+        bot.lastXmapTargetId = targetMapId;
+      }
+      bot.statusText = `🚪 Đang tự động rời khỏi ${state.mapName} (${state.mapId}) để Xmap tới ${targetMapName} (${targetMapId})...`;
+      return;
+    }
+    bot.houseEnterTime = 0;
+
+    // 4. KIỂM TRA ĐÃ ĐẾN ĐÚNG MAP CHỈ ĐỊNH CHƯA (100% THEO TileMap.mapID TRONG RAM)
+    if (state.mapId !== targetMapId) {
+      if (state.tanSat) {
+        setTanSatInRam(false);
+      }
+
+      const xmapCtrlReady = state.ptrs.xmapCtrlStatic !== 0;
+      const needRetrigger =
+        !state.isXmapRunning ||
+        !xmapCtrlReady ||
+        state.xmapTargetId !== targetMapId ||
+        bot.lastXmapTargetId !== targetMapId;
+
+      if (needRetrigger && (now - bot.lastXmapTriggerTime > 400)) {
+        startXmapInRam(targetMapId, state.mapId);
+        bot.lastXmapTriggerTime = now;
+        bot.lastXmapTargetId = targetMapId;
+      }
+
+      bot.statusText = `🚀 Đang Xmap tự động: ${state.mapName} (${state.mapId}) ➔ ${targetMapName} (${targetMapId}) [${req.stepName}]`;
+      return;
+    }
+
+    // 5. ĐÃ ĐẾN ĐÚNG MAP MỤC TIÊU! DỪNG XMAP NẾU CÒN BẬT
+    if (state.isXmapRunning) {
+      stopXmapInRam();
+    }
+
+    // Tự động ăn đậu nếu HP hoặc KI tụt dưới 45% khi đang đánh quái
+    if (state.cHPFull > 0 && (state.cHP < state.cHPFull * 0.45 || state.cMP < state.cMPFull * 0.45)) {
+      if (!bot.lastBeanTime || now - bot.lastBeanTime > 600) {
+        useBeanInRam();
+        bot.lastBeanTime = now;
+      }
+    }
+
+    if (req.targetKills <= 0) {
+      setTanSatInRam(false);
+      if (!req.isAutoRam) {
+        bot.statusText = `📍 Đã tới ${targetMapName} (${targetMapId})! Chuyển bước tiếp theo...`;
+        bot.stageIndex++;
+        resetStageTracking();
+      } else {
+        bot.statusText = `📍 Đã có mặt tại ${targetMapName} (${targetMapId}) theo yêu cầu nhiệm vụ: ${req.stepName}`;
+      }
+      return;
+    }
+
+    // 6. KIỂM TRA BOSS TRONG KHU (NẾU BẬT NÉ BOSS)
+    if (bot.options.avoidBoss && state.bossDetected) {
+      setTanSatInRam(false);
+      bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong khu ${state.zoneId}! Đang tạm ngưng đánh...`;
+      return;
+    }
+
+    // 7. CẬP NHẬT BỘ ĐẾM QUÁI TRỰC TIẾP TỪ RAM
+    updateKillCounterFromRamMobs(state, targetMapId);
+
+    const updatedReq = getActiveTaskRequirement(state);
+    if (!updatedReq.isAutoRam && updatedReq.currentKills >= updatedReq.targetKills) {
+      setTanSatInRam(false);
+      bot.statusText = `🎯 Hoàn thành ${updatedReq.currentKills}/${updatedReq.targetKills} quái tại ${targetMapName}! Chuyển sang bước kế tiếp...`;
+      bot.stageIndex++;
+      resetStageTracking();
+      return;
+    }
+
+    // 8. BẬT TÀN SÁT & CẤU HÌNH GOBACK TRỰC TIẾP TRONG RAM
+    if (bot.options.autoGoback) {
+      setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
+    }
+
+    if (!state.tanSat) {
+      setTanSatInRam(true, {
+        neSieuQuai: bot.options.neSieuQuai,
+        vuotDiaHinh: bot.options.vuotDiaHinh,
+        telePem: bot.options.telePem,
+        autoPick: bot.options.autoPick
+      });
+    }
+
+    bot.statusText = `⚔️ [${updatedReq.stepName}] Đang đánh tại ${targetMapName} (Khu ${state.zoneId}): ${updatedReq.currentKills}/${updatedReq.targetKills}`;
+  }
+
+  // ============================================================================
+  // 7. GIAO DIỆN ĐIỀU KHIỂN NỔI TRONG GAME (FLOATING HUD PANEL)
+  // ============================================================================
+  let hudRefs = null;
+
+  function createHUD() {
+    if (document.getElementById("nro-deep-bot-hud")) return;
+
+    const container = document.createElement("div");
+    container.id = "nro-deep-bot-hud";
+    container.style.cssText = `
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      width: 360px;
+      background: rgba(15, 23, 42, 0.94);
+      color: #f8fafc;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 12.5px;
+      border: 1px solid #38bdf8;
+      border-radius: 10px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.65);
+      z-index: 999999;
+      user-select: none;
+      overflow: hidden;
+      backdrop-filter: blur(6px);
+    `;
+
+    container.innerHTML = `
+      <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
+        <span>🐉 NRO DEEP MEMORY BOT v2.3.1</span>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
+          <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
+        </div>
+      </div>
+
+      <div id="nro-bot-body" style="padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;">
+        <!-- Telemetry từ RAM -->
+        <div style="background: rgba(30, 41, 59, 0.85); border: 1px solid #334155; border-radius: 6px; padding: 7px 9px; line-height: 1.55;">
+          <div>🗺️ <b>Bản đồ:</b> <span id="nro-lbl-map" style="color:#38bdf8;">Đang đọc RAM...</span></div>
+          <div>❤️ <b>HP:</b> <span id="nro-lbl-hp" style="color:#4ade80;">0/0</span> | 💧 <b>KI:</b> <span id="nro-lbl-mp" style="color:#60a5fa;">0/0</span></div>
+          <div>📍 <b>Tọa độ:</b> <span id="nro-lbl-pos">(0, 0)</span> | 👾 <b>Quái sống:</b> <span id="nro-lbl-mobs">0</span></div>
+          <div>⚡ <b>Tàn Sát (RAM):</b> <span id="nro-lbl-ts">TẮT</span> | 🧭 <b>Xmap:</b> <span id="nro-lbl-gb">TẮT</span></div>
+          <div>📜 <b>Nhiệm vụ RAM:</b> <span id="nro-lbl-task" style="color:#fbbf24;">Đang đọc...</span></div>
+        </div>
+
+        <!-- Chọn kịch bản nhiệm vụ -->
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <label style="font-weight:600; color:#cbd5e1;">Chế độ Nhiệm vụ:</label>
+          <select id="nro-sel-preset" style="background:#1e293b; color:#f8fafc; border:1px solid #475569; border-radius:5px; padding:5px 6px; font-size:12px;">
+            <option value="auto_ram_quest">🤖 Tự động 100% theo Nhiệm Vụ trong Game (RAM)</option>
+            <option value="clan_quest_bulon">NV Bang Hội 2: Bulon (30) → Ukulele (34) → Quỷ Mập (38)</option>
+            <option value="quest_pigs">NV Săn 3 Loại Heo: Bamboo (27) → Hoa vàng (31) → Rừng cọ (35)</option>
+            <option value="custom_single_map">Tùy chỉnh: Xmap tới Map ID & Đánh đủ N quái</option>
+          </select>
+        </div>
+
+        <!-- Cấu hình nhanh Bước hiện tại / Map ID & Số quái -->
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px; background: rgba(30, 41, 59, 0.6); padding:6px 8px; border-radius:6px; border:1px solid #334155;">
+          <div>
+            <label style="font-size:11px; color:#94a3b8;">Bước chạy:</label>
+            <input id="nro-inp-stage" type="number" min="1" max="10" value="1" style="width:100%; box-sizing:border-box; background:#0f172a; color:#fff; border:1px solid #475569; border-radius:4px; padding:3px 5px; font-size:12px;">
+          </div>
+          <div>
+            <label style="font-size:11px; color:#94a3b8;">Map ID đích:</label>
+            <input id="nro-inp-mapid" type="number" min="0" max="200" value="30" style="width:100%; box-sizing:border-box; background:#0f172a; color:#fff; border:1px solid #475569; border-radius:4px; padding:3px 5px; font-size:12px;">
+          </div>
+          <div>
+            <label style="font-size:11px; color:#94a3b8;">Số quái cần hạ:</label>
+            <input id="nro-inp-kills" type="number" min="0" max="9999" value="30" style="width:100%; box-sizing:border-box; background:#0f172a; color:#fff; border:1px solid #475569; border-radius:4px; padding:3px 5px; font-size:12px;">
+          </div>
+        </div>
+
+        <!-- Tùy chọn thông minh trong RAM -->
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; font-size:11.5px; color:#e2e8f0;">
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+            <input type="checkbox" id="nro-chk-nesieuquai" checked> Né Siêu Quái (RAM)
+          </label>
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+            <input type="checkbox" id="nro-chk-goback" checked> Tự Goback khi chết
+          </label>
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+            <input type="checkbox" id="nro-chk-autopick" checked> Tự nhặt vật phẩm
+          </label>
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+            <input type="checkbox" id="nro-chk-telepem"> Dịch chuyển đánh (Tele)
+          </label>
+        </div>
+
+        <!-- Thanh tiến độ & Trạng thái -->
+        <div style="background:#0f172a; border:1px solid #334155; border-radius:6px; padding:7px 9px;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:600;">
+            <span id="nro-lbl-stagename" style="color:#38bdf8;">Mục tiêu hiện tại</span>
+            <span id="nro-lbl-progress" style="color:#fbbf24;">0 / 30</span>
+          </div>
+          <div style="width:100%; height:7px; background:#1e293b; border-radius:4px; overflow:hidden; margin-bottom:6px;">
+            <div id="nro-bar-progress" style="width:0%; height:100%; background:linear-gradient(90deg, #22c55e, #10b981); transition:width 0.15s;"></div>
+          </div>
+          <div id="nro-lbl-status" style="font-size:11.5px; color:#cbd5e1; min-height:16px;">Đang chờ lệnh...</div>
+        </div>
+
+        <!-- Nút điều khiển chính -->
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px;">
+          <button id="nro-btn-toggle" style="background:#16a34a; color:#fff; border:none; border-radius:6px; padding:8px; font-weight:700; cursor:pointer; font-size:12.5px;">▶ BẮT ĐẦU AUTO</button>
+          <button id="nro-btn-nextstage" style="background:#2563eb; color:#fff; border:none; border-radius:6px; padding:8px; font-weight:600; cursor:pointer; font-size:12px;">⏭ Qua Bước Kế</button>
+        </div>
+
+        <!-- Công cụ điều khiển RAM trực tiếp -->
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:5px;">
+          <button id="nro-btn-ram-ts" style="background:#334155; color:#f8fafc; border:1px solid #475569; border-radius:5px; padding:5px; font-size:11px; cursor:pointer;">⚡ Bật/Tắt TS</button>
+          <button id="nro-btn-ram-xmap" style="background:#334155; color:#f8fafc; border:1px solid #475569; border-radius:5px; padding:5px; font-size:11px; cursor:pointer;">🚀 Xmap Tới ID</button>
+          <button id="nro-btn-ram-stop" style="background:#7f1d1d; color:#fecaca; border:1px solid #ef4444; border-radius:5px; padding:5px; font-size:11px; cursor:pointer;">🛑 Dừng Khẩn</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(container);
+
+    const header = container.querySelector("#nro-bot-header");
+    let isDragging = false, dragOffX = 0, dragOffY = 0;
+    header.addEventListener("mousedown", (e) => {
+      if (e.target.id === "nro-btn-min") return;
+      isDragging = true;
+      const rect = container.getBoundingClientRect();
+      dragOffX = e.clientX - rect.left;
+      dragOffY = e.clientY - rect.top;
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      container.style.left = Math.max(0, e.clientX - dragOffX) + "px";
+      container.style.top = Math.max(0, e.clientY - dragOffY) + "px";
+      container.style.right = "auto";
+    });
+    window.addEventListener("mouseup", () => { isDragging = false; });
+
+    const bodyEl = container.querySelector("#nro-bot-body");
+    const minBtn = container.querySelector("#nro-btn-min");
+    minBtn.addEventListener("click", () => {
+      const hidden = bodyEl.style.display === "none";
+      bodyEl.style.display = hidden ? "flex" : "none";
+      minBtn.textContent = hidden ? "−" : "+";
+    });
+
+    hudRefs = {
+      badge: container.querySelector("#nro-ram-badge"),
+      map: container.querySelector("#nro-lbl-map"),
+      hp: container.querySelector("#nro-lbl-hp"),
+      mp: container.querySelector("#nro-lbl-mp"),
+      pos: container.querySelector("#nro-lbl-pos"),
+      mobs: container.querySelector("#nro-lbl-mobs"),
+      ts: container.querySelector("#nro-lbl-ts"),
+      gb: container.querySelector("#nro-lbl-gb"),
+      task: container.querySelector("#nro-lbl-task"),
+      selPreset: container.querySelector("#nro-sel-preset"),
+      inpStage: container.querySelector("#nro-inp-stage"),
+      inpMapId: container.querySelector("#nro-inp-mapid"),
+      inpKills: container.querySelector("#nro-inp-kills"),
+      chkNeSieuQuai: container.querySelector("#nro-chk-nesieuquai"),
+      chkGoback: container.querySelector("#nro-chk-goback"),
+      chkAutoPick: container.querySelector("#nro-chk-autopick"),
+      chkTelePem: container.querySelector("#nro-chk-telepem"),
+      stageName: container.querySelector("#nro-lbl-stagename"),
+      progress: container.querySelector("#nro-lbl-progress"),
+      bar: container.querySelector("#nro-bar-progress"),
+      status: container.querySelector("#nro-lbl-status"),
+      btnToggle: container.querySelector("#nro-btn-toggle"),
+      btnNextStage: container.querySelector("#nro-btn-nextstage"),
+      btnRamTs: container.querySelector("#nro-btn-ram-ts"),
+      btnRamXmap: container.querySelector("#nro-btn-ram-xmap"),
+      btnRamStop: container.querySelector("#nro-btn-ram-stop")
+    };
+
+    function syncInputsFromCurrentStage() {
+      const preset = QUEST_PRESETS[bot.presetKey];
+      if (!preset || preset.autoFromRam) return;
+      const st = preset.stages[bot.stageIndex] || preset.stages[0];
+      if (!st) return;
+      hudRefs.inpStage.value = bot.stageIndex + 1;
+      if (st.mapId !== "HOME") {
+        hudRefs.inpMapId.value = st.mapId;
+      }
+      hudRefs.inpKills.value = st.targetKills;
+    }
+
+    hudRefs.selPreset.addEventListener("change", () => {
+      bot.presetKey = hudRefs.selPreset.value;
+      bot.stageIndex = 0;
+      resetStageTracking();
+      syncInputsFromCurrentStage();
+    });
+
+    hudRefs.inpStage.addEventListener("change", () => {
+      const preset = QUEST_PRESETS[bot.presetKey];
+      if (!preset || preset.autoFromRam) return;
+      const idx = Math.max(0, Math.min(preset.stages.length - 1, parseInt(hudRefs.inpStage.value, 10) - 1 || 0));
+      bot.stageIndex = idx;
+      resetStageTracking();
+      syncInputsFromCurrentStage();
+    });
+
+    hudRefs.inpMapId.addEventListener("change", () => {
+      const preset = QUEST_PRESETS[bot.presetKey];
+      if (!preset || preset.autoFromRam || !preset.stages[bot.stageIndex]) return;
+      const val = parseInt(hudRefs.inpMapId.value, 10);
+      if (!isNaN(val) && val >= 0) {
+        preset.stages[bot.stageIndex].mapId = val;
+      }
+    });
+
+    hudRefs.inpKills.addEventListener("change", () => {
+      const preset = QUEST_PRESETS[bot.presetKey];
+      if (!preset || preset.autoFromRam || !preset.stages[bot.stageIndex]) return;
+      const val = parseInt(hudRefs.inpKills.value, 10);
+      if (!isNaN(val) && val >= 0) {
+        preset.stages[bot.stageIndex].targetKills = val;
+      }
+    });
+
+    const syncCheckboxes = () => {
+      bot.options.neSieuQuai = hudRefs.chkNeSieuQuai.checked;
+      bot.options.autoGoback = hudRefs.chkGoback.checked;
+      bot.options.autoPick = hudRefs.chkAutoPick.checked;
+      bot.options.telePem = hudRefs.chkTelePem.checked;
+    };
+    hudRefs.chkNeSieuQuai.addEventListener("change", syncCheckboxes);
+    hudRefs.chkGoback.addEventListener("change", syncCheckboxes);
+    hudRefs.chkAutoPick.addEventListener("change", syncCheckboxes);
+    hudRefs.chkTelePem.addEventListener("change", syncCheckboxes);
+
+    hudRefs.btnToggle.addEventListener("click", () => {
+      bot.running = !bot.running;
+      if (bot.running) {
+        syncCheckboxes();
+        bot.lastXmapTriggerTime = 0;
+        bot.lastXmapTargetId = -1;
+        hudRefs.btnToggle.textContent = "⏸ TẠM DỪNG AUTO";
+        hudRefs.btnToggle.style.background = "#d97706";
+      } else {
+        setTanSatInRam(false);
+        stopXmapInRam();
+        bot.statusText = "⏸ Đã tạm dừng Auto.";
+        hudRefs.btnToggle.textContent = "▶ BẮT ĐẦU AUTO";
+        hudRefs.btnToggle.style.background = "#16a34a";
+      }
+    });
+
+    hudRefs.btnNextStage.addEventListener("click", () => {
+      const preset = QUEST_PRESETS[bot.presetKey];
+      if (!preset || preset.autoFromRam) return;
+      setTanSatInRam(false);
+      stopXmapInRam();
+      bot.stageIndex = (bot.stageIndex + 1) % preset.stages.length;
+      resetStageTracking();
+      syncInputsFromCurrentStage();
+      bot.statusText = `⏭ Đã chuyển sang Bước ${bot.stageIndex + 1}.`;
+    });
+
+    hudRefs.btnRamTs.addEventListener("click", () => {
+      const st = readGameState();
+      if (!st) return;
+      syncCheckboxes();
+      setTanSatInRam(!st.tanSat, bot.options);
+    });
+
+    hudRefs.btnRamXmap.addEventListener("click", () => {
+      const st = readGameState();
+      const targetId = parseInt(hudRefs.inpMapId.value, 10);
+      if (!isNaN(targetId) && targetId >= 0) {
+        startXmapInRam(targetId, st ? st.mapId : -1);
+        bot.statusText = `🚀 Đang Xmap trực tiếp tới ${MAP_NAMES[targetId] || ("Map " + targetId)} (ID: ${targetId})...`;
+      }
+    });
+
+    hudRefs.btnRamStop.addEventListener("click", () => {
+      bot.running = false;
+      setTanSatInRam(false);
+      stopXmapInRam();
+      hudRefs.btnToggle.textContent = "▶ BẮT ĐẦU AUTO";
+      hudRefs.btnToggle.style.background = "#16a34a";
+      bot.statusText = "🛑 Đã dừng khẩn cấp mọi tác vụ Xmap & Tàn Sát.";
+    });
+  }
+
+  function updateHUD(state) {
+    if (!hudRefs) {
+      if (document.body) createHUD();
+      return;
+    }
+
+    if (!state) {
+      hudRefs.badge.textContent = "WASM: ĐANG BẮT...";
+      hudRefs.badge.style.background = "#ef4444";
+      return;
+    }
+
+    hudRefs.badge.textContent = "WASM: ĐÃ KẾT NỐI";
+    hudRefs.badge.style.background = "#16a34a";
+
+    hudRefs.map.textContent = `${state.mapName} (ID: ${state.mapId}) - Khu ${state.zoneId}`;
+    hudRefs.hp.textContent = `${state.cHP.toLocaleString()}/${state.cHPFull.toLocaleString()}`;
+    hudRefs.mp.textContent = `${state.cMP.toLocaleString()}/${state.cMPFull.toLocaleString()}`;
+    hudRefs.pos.textContent = `(${state.cx}, ${state.cy})`;
+    hudRefs.mobs.textContent = `${state.aliveMobs} / ${state.mobs.length}`;
+
+    hudRefs.ts.textContent = state.tanSat ? "ĐANG BẬT" : "TẮT";
+    hudRefs.ts.style.color = state.tanSat ? "#4ade80" : "#94a3b8";
+
+    hudRefs.gb.textContent = state.isXmapRunning ? `ĐANG CHẠY (-> Map ${state.xmapTargetId})` : "TẮT";
+    hudRefs.gb.style.color = state.isXmapRunning ? "#38bdf8" : "#94a3b8";
+
+    if (state.taskMaint) {
+      const stepLabel = state.taskMaint.activeStepName || `Bước ${state.taskMaint.index}`;
+      hudRefs.task.textContent = `${stepLabel} (${state.taskMaint.count}/${state.taskMaint.max})`;
+    }
+
+    const req = getActiveTaskRequirement(state);
+    if (req && !req.finished) {
+      const destName = MAP_NAMES[req.mapId] || ("Map " + req.mapId);
+      hudRefs.stageName.textContent = `${req.stepName} ➔ ${destName} (ID: ${req.mapId})`;
+      hudRefs.progress.textContent = req.targetKills > 0 ? `${req.currentKills} / ${req.targetKills}` : "Di chuyển";
+      const pct = req.targetKills > 0 ? Math.min(100, Math.round((req.currentKills / req.targetKills) * 100)) : 100;
+      hudRefs.bar.style.width = pct + "%";
+
+      if (QUEST_PRESETS[bot.presetKey] && QUEST_PRESETS[bot.presetKey].autoFromRam) {
+        hudRefs.inpMapId.value = req.mapId;
+        hudRefs.inpKills.value = req.targetKills;
+      } else if (document.activeElement !== hudRefs.inpStage) {
+        hudRefs.inpStage.value = bot.stageIndex + 1;
+      }
+    }
+
+    hudRefs.status.textContent = bot.statusText;
+  }
+
+  window.__NRO_DEEP_BOT_TIMER__ = setInterval(tickBot, 80);
+  console.log("[NRO Deep Bot v2.3] Đã nạp thành công! Đã mở khóa ModFunc.gI().canUpdate = 1, sửa đọc tiến độ Nhiệm vụ (0/30), tự rời nhà & tự hồi sinh.");
+})();

@@ -1,0 +1,44 @@
+# HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG BOT NRO WEB v2.3.1 (WASM MEMORY)
+
+Bot can thiệp trực tiếp vào bộ nhớ WebAssembly (WASM) của game để tự động làm nhiệm vụ, đọc Map thật, tự động rời nhà, hồi sinh và đếm quái chính xác.
+
+---
+
+## CÁCH 1: DÀNH CHO BẠN BÈ (CÀI ĐẶT DẠNG CHROME EXTENSION) - TIỆN NHẤT
+
+1. **Tải file:** Nhận file `NRO_Bot_v2.3.1_Extension.zip` và giải nén ra một thư mục bất kỳ trên máy tính (ví dụ: thư mục `nro-bot`).
+2. **Mở trình duyệt:** Mở Chrome, Cốc Cốc, Brave hoặc Edge.
+3. **Mở trang tiện ích:**
+   - Gõ lên thanh địa chỉ: `chrome://extensions/` rồi nhấn Enter.
+   - Bật công tắc **"Chế độ dành cho nhà phát triển" (Developer mode)** ở góc trên bên phải.
+4. **Cài đặt tiện ích:**
+   - Bấm nút **"Tải tiện ích đã giải nén" (Load unpacked)** ở góc trên bên trái.
+   - Chọn đúng thư mục vừa giải nén (nơi chứa 2 file `manifest.json` và `bot.js`).
+5. **Vào game:**
+   - Truy cập vào web game: `https://nroweb.com/nro/`
+   - Bảng điều khiển `🐉 NRO DEEP MEMORY BOT v2.3.1` sẽ tự động hiển thị ở góc trên bên phải màn hình game.
+
+---
+
+## CÁCH 2: DÀNH CHO NGƯỜI DÙNG TAMPERMONKEY / VIOLENTMONKEY
+
+Nếu bạn bè đã quen dùng extension Tampermonkey:
+1. Mở tiện ích Tampermonkey -> Chọn **Tạo script mới (Create a new script)**.
+2. Sao chép toàn bộ nội dung file `nro-deep-bot-v2.3.1.user.js` dán vào và nhấn **Ctrl + S** để lưu.
+3. F5 lại trang game để sử dụng.
+
+---
+
+## CÁCH 3: DÙNG NHANH KHÔNG CẦN CÀI ĐẶT (CONSOLE F12)
+
+1. Mở web game `https://nroweb.com/nro/` và đăng nhập vào nhân vật.
+2. Nhấn phím **F12** (hoặc chuột phải -> Kiểm tra / Inspect) -> Chọn thẻ **Console**.
+3. Mở file `nro-deep-bot-v2.3.1.user.js`, copy toàn bộ nội dung dán vào Console rồi bấm **Enter**.
+
+---
+
+## HƯỚNG DẪN BẬT AUTO:
+- Đảm bảo huy hiệu góc trên hiện: **`WASM: ĐÃ KẾT NỐI`** (màu xanh lá).
+- Chọn chế độ: **`🤖 Tự động 100% theo Nhiệm Vụ trong Game (RAM)`**
+- Bấm nút **`▶ BẮT ĐẦU AUTO`**. Bot sẽ tự động đọc nhiệm vụ, Xmap đến đúng Map, bật Tàn Sát và tự Goback/hồi sinh khi chết.
+

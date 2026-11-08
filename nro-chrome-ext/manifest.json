@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "NRO Deep Memory Bot (WASM RAM)",
+  "version": "2.3.0",
+  "description": "Tự động đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8) của Ngọc Rồng Web: Xmap theo MapID thật, bật/tắt Tàn Sát trực tiếp trong RAM, đếm chính xác từng con quái hạ gục, tự động Goback khi chết.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://nroweb.com/nro/*",
+        "http://nroweb.com/nro/*"
+      ],
+      "js": ["bot.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}
+
