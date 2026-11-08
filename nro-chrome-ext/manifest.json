@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NRO Deep Memory Bot (WASM RAM)",
-  "version": "2.4.5",
+  "version": "2.4.6",
   "description": "Tu dong doc/ghi truc tiep bo nho WebAssembly (HEAP32/HEAPU8) cua Ngoc Rong Web: Tu dong di chuyen lien hanh tinh qua Tram Tau Vu Tru (24/25/26), tu lam nhiem vu Bai Su & Bang Hoi mot mach, tu ne Boss & doi khu.",
   "content_scripts": [
     {

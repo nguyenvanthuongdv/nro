@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
 // @namespace    https://nroweb.com/
-// @version      2.4.5
+// @version      2.4.6
 // @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch, tự né Boss & đổi khu vực.
 // @author       Antigravity
 // @match        https://nroweb.com/nro/*
@@ -135,14 +135,14 @@
       return true;
     }
 
-    // 2. Tên Sư phụ & NPC chính tuyến
+    // 2. Tên Sư phụ & NPC chính tuyến (chỉ khi KHÔNG phải bước đánh/tìm)
+    if (isMobKillOrCollectStep(stepText) || s.includes("tim ") || s.includes("danh ") || s.includes("san ")) {
+      return false;
+    }
     if (
       s.includes("quy lao") ||
-      s.includes("kame") ||
       s.includes("truong lao") ||
-      s.includes("guru") ||
       s.includes("vua vegeta") ||
-      s.includes("vegeta") ||
       s.includes("ong gohan") ||
       s.includes("ong moori") ||
       s.includes("ong paragus") ||
@@ -153,9 +153,7 @@
       s.includes("dende") ||
       s.includes("appule")
     ) {
-      if (!s.includes("danh") && !s.includes("tieu diet") && !s.includes("ha ") && !s.includes("san ")) {
-        return true;
-      }
+      return true;
     }
 
     // 3. Bái sư / Giao truyện
@@ -254,9 +252,9 @@
     if (stepNorm.includes("quy bay")) return 17;
 
     // 4. Báo cáo nhiệm vụ / Gặp NPC:
-    if (stepNorm.includes("quy lao") || stepNorm.includes("dao kame") || stepNorm.includes("kame")) return 5;
-    if (stepNorm.includes("truong lao") || stepNorm.includes("dao guru") || stepNorm.includes("guru")) return 13;
-    if (stepNorm.includes("vua vegeta") || stepNorm.includes("vach nui den") || stepNorm.includes("vegeta")) return 20;
+    if (stepNorm.includes("quy lao") || stepNorm.includes("dao kame")) return 5;
+    if (stepNorm.includes("truong lao") || stepNorm.includes("dao guru")) return 13;
+    if (stepNorm.includes("vua vegeta") || stepNorm.includes("vach nui den")) return 20;
     if (stepNorm.includes("bo mong") || stepNorm.includes("rung karin")) return 47;
     if (stepNorm.includes("than meo") || stepNorm.includes("thap karin")) return 46;
     if (stepNorm.includes("thuong de") || stepNorm.includes("than dien")) return 45;
@@ -282,14 +280,15 @@
       return 21 + (cgender || 0);
     }
 
-    // 5. Dò tên Map trực tiếp trong stepNorm trước, sau đó mới tới detailNorm
-    for (const [idStr, mName] of Object.entries(MAP_NAMES)) {
+    // 5. Dò tên Map trực tiếp (ưu tiên tên DÀI trước để "Đông Nam Guru" thắng "Nam Guru")
+    const mapEntriesByLen = Object.entries(MAP_NAMES).sort((a, b) => b[1].length - a[1].length);
+    for (const [idStr, mName] of mapEntriesByLen) {
       const mNorm = normalizeText(mName);
       if (mNorm.length >= 5 && stepNorm.includes(mNorm)) {
         return Number(idStr);
       }
     }
-    for (const [idStr, mName] of Object.entries(MAP_NAMES)) {
+    for (const [idStr, mName] of mapEntriesByLen) {
       const mNorm = normalizeText(mName);
       if (mNorm.length >= 5 && detailNorm.includes(mNorm)) {
         return Number(idStr);
@@ -611,13 +610,14 @@
     const cx = HEAP32[(myCharPtr + 80) >> 2];
     const cy = HEAP32[(myCharPtr + 84) >> 2];
     const statusMe = HEAP32[(myCharPtr + 108) >> 2];
-    const cgender = HEAP32[(myCharPtr + 120) >> 2]; // +120: cgender (0: Trái Đất, 1: Namếc, 2: Xayda)
+    let cgender = HEAP32[(myCharPtr + 120) >> 2]; // +120: cgender (0: Trái Đất, 1: Namếc, 2: Xayda)
 
     const cMP = readF64(myCharPtr + 184);
     const cHP = readF64(myCharPtr + 192);
     const cHPFull = readF64(myCharPtr + 248);
     const cMPFull = readF64(myCharPtr + 256);
 
+    if (cgender < 0 || cgender > 2) { if (!window.__NRO_OFFSET_WARNED__) { window.__NRO_OFFSET_WARNED__ = true; console.warn('[NRO Deep Bot] cgender doc tu RAM = ' + cgender + ' (ngoai 0..2): offset +120 co the sai, tam dung ve 0'); } cgender = 0; }
     const isDie = statusMe === 14 || HEAPU8[myCharPtr + 310] === 1 || (cHPFull > 0 && cHP <= 0);
     const isChangingMap = HEAPU8[myCharPtr + 34] === 1;
     const mobFocusPtr = HEAPU32[(myCharPtr + 568) >> 2];
@@ -899,14 +899,17 @@
     if (!enable || !state) return false;
 
     const myCharPtr = state.ptrs.myCharPtr;
-    const hintNorm = normalizeText(bossNameHint || "");
+    const stepNormForBoss = normalizeText(bossNameHint || "");
+    const BOSS_KEYS = ["akkuman", "tamborine", "drum", "tau pay pay", "kuku", "map dau dinh", "rambo", "fide", "android", "king kong", "xen bo hung", "tieu doi truong", "broly"];
+    const hintKey = BOSS_KEYS.find(k => stepNormForBoss.includes(k)) || "";
 
-    // Tìm Boss trong danh sách nhân vật trong khu (GameScr.vCharInMap)
+    // Tìm đúng Boss của nhiệm vụ trong khu (khớp theo tên); chỉ khi bước không nêu tên boss mới lấy boss bất kỳ
     let targetChar = null;
     if (state.charsInMap && state.charsInMap.length > 0) {
       for (const ch of state.charsInMap) {
+        if (ch.hp <= 0) continue;
         const chNorm = normalizeText(ch.name);
-        if ((hintNorm && chNorm.includes(hintNorm)) || ch.isBoss) {
+        if (hintKey ? chNorm.includes(hintKey) : ch.isBoss) {
           targetChar = ch;
           break;
         }
@@ -914,17 +917,10 @@
     }
 
     if (targetChar && myCharPtr) {
-      // Khóa trực tiếp charFocus (+584), xóa mobFocus (+568) và npcFocus (+580)
+      // Chỉ khóa mục tiêu (focus); việc áp sát do ModFunc.focusBoss/Tàn Sát của game xử lý
       HEAPU32[(myCharPtr + 568) >> 2] = 0;
       HEAPU32[(myCharPtr + 580) >> 2] = 0;
       HEAPU32[(myCharPtr + 584) >> 2] = targetChar.ptr;
-
-      // Áp sát Boss nếu khoảng cách xa > 60px
-      const dist = Math.hypot(targetChar.x - state.cx, targetChar.y - state.cy);
-      if (dist > 60 && targetChar.x > 0 && targetChar.y > 0) {
-        HEAP32[(myCharPtr + 80) >> 2] = targetChar.x;
-        HEAP32[(myCharPtr + 84) >> 2] = targetChar.y;
-      }
       return true;
     }
     return false;
@@ -1067,12 +1063,8 @@
     const myCharPtr = state.ptrs.myCharPtr;
     if (!gameCanvasStatic || !myCharPtr) return "Đang đợi GameCanvas...";
 
-    // 0. Nếu lỡ mở bảng Shop sách (Uron) hay Panel: gửi phím ESC & nút Đóng để tắt ngay
-    pressAsciiKeyInRam(27); // Phím ESC đóng bảng shop/menu
+    // 0. (Đã chuyển ESC xuống sau khi kiểm tra popup/menu để không tự đóng menu chọn hành tinh)
     const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
-    if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
-      HEAPU8[keyPressedPtr + 16 + 12] = 1; // KeyRight / Đóng panel
-    }
 
     // 1. Kiểm tra nếu ChatPopup đang hiện (bấm qua)
     const chatPopupStatic = getStaticFieldsPtr(ADDR.ChatPopup_TypeInfo);
@@ -1204,13 +1196,8 @@
       HEAPU8[pickMobStatic + 45] = options.autoPick ? 1 : 0; // IsPickItemsAll (nhặt tất cả vật phẩm nhiệm vụ như Truyện tranh)
       HEAPU8[pickMobStatic + 46] = options.autoPick ? 1 : 0; // IsPickItemsDis (nhặt xa)
     }
-    // Xóa bộ lọc loại quái (TypeMobsTanSat +36 & IdMobsTanSat +32) để không bị kẹt chỉ đánh 1 loại quái cũ
+    // Giữ nguyên bộ lọc quái (IdMobsTanSat/TypeMobsTanSat) do người dùng cấu hình
     if (enable) {
-      const idMobsList = HEAPU32[(pickMobStatic + 32) >> 2];
-      if (idMobsList && idMobsList < wasmBuffer.byteLength) HEAP32[(idMobsList + 12) >> 2] = 0;
-      const typeMobsList = HEAPU32[(pickMobStatic + 36) >> 2];
-      if (typeMobsList && typeMobsList < wasmBuffer.byteLength) HEAP32[(typeMobsList + 12) >> 2] = 0;
-
       if (HEAP32[(pickMobStatic + 68) >> 2] <= 0) HEAP32[(pickMobStatic + 68) >> 2] = 50; // hpBuff = 50%
       if (HEAP32[(pickMobStatic + 72) >> 2] <= 0) HEAP32[(pickMobStatic + 72) >> 2] = 50; // mpBuff = 50%
     }
@@ -1247,9 +1234,8 @@
       HEAP32[(pickMobStatic + 16) >> 2] = currMap;    // mapGoback = current map
       HEAP32[(pickMobStatic + 20) >> 2] = nextZoneId; // zoneGoback = nextZoneId
     }
-    // Gửi tín hiệu phím 'm' (109) và 'k' (107) để kích hoạt chuyển khu trong mod
+    // Gửi phím 'm' (109) để kích hoạt chuyển khu (chỉ ghi 1 phím: keyAsciiPress là biến đơn)
     pressAsciiKeyInRam(109);
-    pressAsciiKeyInRam(107);
     return true;
   }
 
@@ -1423,7 +1409,8 @@
         const isNpc = isNpcReportStep(tm.activeStepName);
         const bossStep = !isNpc && isBossQuestStep(tm.activeStepName);
         const mobOrCollectStep = !isNpc && !bossStep && (tm.max > 0 || isMobKillOrCollectStep(tm.activeStepName));
-        const npcStep = isNpc || (!bossStep && !mobOrCollectStep);
+        const npcStep = isNpc;
+        const unsupported = !isNpc && !bossStep && !mobOrCollectStep;
         const isCollect = mobOrCollectStep && tm.max <= 0;
         const targetKills = isNpc ? 0 : (bossStep ? 1 : (tm.max > 0 ? tm.max : (mobOrCollectStep ? 1 : 0)));
         const currentKills = (isNpc || bossStep || isCollect) ? 0 : Math.max(tm.count, bot.stageKilledCount);
@@ -1431,6 +1418,7 @@
           isAutoRam: true,
           isBossStep: bossStep,
           isNpcStep: npcStep,
+          isUnsupported: unsupported,
           isCollectStep: isCollect,
           stepName: tm.activeStepName || `Bước ${tm.index}`,
           mapId: autoMapId,
@@ -1438,6 +1426,25 @@
           currentKills
         };
       }
+      // Không xác định được Map cho bước này -> TUYỆT ĐỐI không chạy kịch bản khác, báo người dùng làm tay
+      return {
+        isAutoRam: true,
+        isUnsupported: true,
+        stepName: tm.activeStepName || `Bước ${tm.index}`,
+        mapId: state.mapId,
+        targetKills: 0,
+        currentKills: 0
+      };
+    }
+    if (preset && preset.autoFromRam) {
+      return {
+        isAutoRam: true,
+        isUnsupported: true,
+        stepName: "Đang đọc nhiệm vụ từ RAM...",
+        mapId: state.mapId,
+        targetKills: 0,
+        currentKills: 0
+      };
     }
 
     // CHẾ ĐỘ 2: CHẠY THEO KỊCH BẢN PRESET HOẶC TÙY CHỈNH
@@ -1516,6 +1523,54 @@
     const targetMapId = req.mapId;
     const targetMapName = MAP_NAMES[targetMapId] || ("Map " + targetMapId);
     const now = Date.now();
+
+    // 0a. BƯỚC CHƯA HỖ TRỢ (mua đồ, trang bị, sự kiện, boss chưa có map...) -> DỪNG AN TOÀN, KHÔNG ĐOÁN
+    if (req.isUnsupported) {
+      setTanSatInRam(false);
+      setBossAttackInRam(false, state);
+      stopXmapInRam();
+      bot.statusText = `🛑 Bước "${req.stepName}" chưa được hỗ trợ tự động. Hãy làm tay bước này rồi bot sẽ tự chạy tiếp.`;
+      return;
+    }
+
+    // 0b. GIỚI HẠN SỐ LẦN CHẾT: chết >= 5 lần trong 10 phút -> dừng hẳn (tránh chết vòng lặp khi hết đậu)
+    if (state.isDie && !bot.wasDie) {
+      bot.deathTimes = (bot.deathTimes || []).filter(t => now - t < 600000);
+      bot.deathTimes.push(now);
+      if (bot.deathTimes.length >= 5) {
+        bot.running = false;
+        setTanSatInRam(false);
+        stopXmapInRam();
+        bot.statusText = "🛑 Đã chết 5 lần trong 10 phút (có thể hết đậu/quá yếu). Bot dừng để bảo vệ nhân vật.";
+        if (hudRefs && hudRefs.btnToggle) {
+          hudRefs.btnToggle.textContent = "▶ BẮT ĐẦU AUTO";
+          hudRefs.btnToggle.style.background = "#16a34a";
+        }
+        bot.wasDie = state.isDie;
+        return;
+      }
+    }
+    bot.wasDie = state.isDie;
+
+    // 0c. XMAP KẸT: cùng một đích quá 90s mà vẫn chưa tới -> dừng & báo
+    if (state.mapId !== targetMapId && state.mapId === bot.lastMapForStuck && bot.lastXmapTargetId === targetMapId) {
+      if (!bot.stuckSince) bot.stuckSince = now;
+      if (now - bot.stuckSince > 90000) {
+        bot.running = false;
+        stopXmapInRam();
+        setTanSatInRam(false);
+        bot.statusText = `🛑 Xmap không tới được ${targetMapName} sau 90s (map bị chặn/cần điều kiện). Hãy tự di chuyển rồi bấm lại.`;
+        bot.stuckSince = 0;
+        if (hudRefs && hudRefs.btnToggle) {
+          hudRefs.btnToggle.textContent = "▶ BẮT ĐẦU AUTO";
+          hudRefs.btnToggle.style.background = "#16a34a";
+        }
+        return;
+      }
+    } else {
+      bot.stuckSince = 0;
+    }
+    bot.lastMapForStuck = state.mapId;
 
     // 1. KIỂM TRA NHÂN VẬT CHẾT -> TỰ ĐỘNG BẤM "KIỆT SỨC" & CHỌN "VỀ NHÀ" TRỰC TIẾP TRONG RAM
     if (state.isDie) {
@@ -1652,6 +1707,20 @@
     if (req.isNpcStep) {
       setTanSatInRam(false);
       setBossAttackInRam(false, state);
+      // Preset: sau ~8s hội thoại tại NPC thì coi như đã báo cáo xong -> sang bước kế (RAM-mode tự đổi theo nhiệm vụ)
+      if (!req.isAutoRam) {
+        if (bot.npcStepKey !== bot.stageIndex) {
+          bot.npcStepKey = bot.stageIndex;
+          bot.npcStepSince = now;
+        }
+        if (now - bot.npcStepSince > 8000) {
+          bot.npcStepKey = -1;
+          bot.stageIndex++;
+          resetStageTracking();
+          bot.statusText = "✅ Đã báo cáo NPC xong, chuyển bước kế...";
+          return;
+        }
+      }
       if (!bot.lastNpcTalkTime || now - bot.lastNpcTalkTime > 380) {
         bot.statusText = autoTalkAndReportNpcInRam(state, req.stepName);
         bot.lastNpcTalkTime = now;
@@ -1665,6 +1734,18 @@
         setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
       }
       const hasBossChar = setBossAttackInRam(true, state, req.stepName);
+      // Preset: đã thấy boss rồi và boss biến mất (đã hạ) -> sang bước kế
+      if (!req.isAutoRam) {
+        if (hasBossChar) bot.bossSeenKey = bot.stageIndex;
+        else if (bot.bossSeenKey === bot.stageIndex) {
+          bot.bossSeenKey = -1;
+          setBossAttackInRam(false, state);
+          bot.stageIndex++;
+          resetStageTracking();
+          bot.statusText = "✅ Đã hạ Trùm, chuyển bước kế...";
+          return;
+        }
+      }
       // Bật thêm Tàn Sát để đánh cả trường hợp Trùm là Mob hoặc hỗ trợ dọn quái quanh Trùm
       if (!state.tanSat) {
         setTanSatInRam(true, {
@@ -1684,19 +1765,31 @@
     setBossAttackInRam(false, state);
 
     // 8. KIỂM TRA BOSS TRONG KHU (NẾU BẬT NÉ BOSS KHI ĐÁNH QUÁI THƯỜNG) -> TỰ ĐỘNG ĐỔI KHU
-    if (bot.options.avoidBoss && state.bossDetected) {
+    if (bot.options.avoidBoss && state.bossDetected && now > (bot.ignoreBossUntil || 0)) {
       setTanSatInRam(false);
-      const currentZone = (state.zoneId >= 0 && state.zoneId < 30) ? state.zoneId : 0;
-      const nextZoneId = (currentZone + 1) % 15;
-      if (!bot.lastZoneChangeTime || now - bot.lastZoneChangeTime > 2500) {
-        if (bot.options.autoGoback) {
-          setGobackInRam(true, targetMapId, nextZoneId, state.cx, state.cy);
-        }
-        requestChangeZoneInRam(nextZoneId);
-        bot.lastZoneChangeTime = now;
+      if (bot.zoneTryFrom !== state.zoneId) {
+        bot.zoneTryFrom = state.zoneId;
+        bot.zoneTries = 0;
       }
-      bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong Khu ${state.zoneId}! Đang tự động đổi sang Khu ${nextZoneId}...`;
-      return;
+      // Đã thử đổi khu 3 lần mà vẫn đứng nguyên (cơ chế đổi khu không hiệu lực) -> bỏ qua boss 60s & tiếp tục đánh
+      if (bot.zoneTries >= 3) {
+        bot.ignoreBossUntil = now + 60000;
+        bot.zoneTries = 0;
+        bot.statusText = `⚠️ Không đổi được khu khỏi ${state.bossDetected.name}. Bỏ qua né Boss 60s, hãy tự đổi khu nếu cần.`;
+      } else {
+        const currentZone = (state.zoneId >= 0 && state.zoneId < 30) ? state.zoneId : 0;
+        const nextZoneId = (currentZone + 1) % 15;
+        if (!bot.lastZoneChangeTime || now - bot.lastZoneChangeTime > 3000) {
+          if (bot.options.autoGoback) {
+            setGobackInRam(true, targetMapId, nextZoneId, state.cx, state.cy);
+          }
+          requestChangeZoneInRam(nextZoneId);
+          bot.lastZoneChangeTime = now;
+          bot.zoneTries++;
+        }
+        bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong Khu ${state.zoneId}! Đang đổi sang Khu ${nextZoneId} (lần ${bot.zoneTries}/3)...`;
+        return;
+      }
     }
 
     // 9. CẬP NHẬT BỘ ĐẾM QUÁI TRỰC TIẾP TỪ RAM
@@ -1758,7 +1851,7 @@
 
     container.innerHTML = `
       <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-        <span>🐉 NRO DEEP MEMORY BOT v2.4.5</span>
+        <span>🐉 NRO DEEP MEMORY BOT v2.4.6</span>
         <div style="display:flex; gap:6px; align-items:center;">
           <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
           <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
@@ -2079,6 +2172,6 @@
     hudRefs.status.textContent = bot.statusText;
   }
 
-  window.__NRO_DEEP_BOT_TIMER__ = setInterval(tickBot, 80);
+  window.__NRO_DEEP_BOT_TIMER__ = setInterval(tickBot, 250);
   console.log("[NRO Deep Bot v2.4.4] Đã nạp thành công! Sửa dứt điểm Tàu vũ trụ (loại bỏ hoàn toàn Uron bán sách, tự động đóng shop & chọn bay sang Namếc/Xayda/Trái Đất).");
 })();
