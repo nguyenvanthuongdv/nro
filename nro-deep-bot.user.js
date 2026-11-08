@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
 // @namespace    https://nroweb.com/
-// @version      2.4.4
-// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch.
+// @version      2.4.5
+// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch, tự né Boss & đổi khu vực.
 // @author       Antigravity
 // @match        https://nroweb.com/nro/*
 // @match        http://nroweb.com/nro/*
@@ -86,9 +86,19 @@
   // Kiểm tra bước nhiệm vụ có phải là Đánh quái / Nhặt vật phẩm (kể cả khi max = 0 như "Đánh bọn ốc sên lấy truyện (0/0)")
   function isMobKillOrCollectStep(stepText) {
     const s = normalizeText(stepText || "");
-    // Nếu là bước báo cáo hoặc nộp/bái sư thuần túy (không có hành động đánh)
-    if (s.includes("bai su") || s.includes("giao truyen") || s.includes("nop truyen")) {
-      if (!s.includes("danh") && !s.includes("lay") && !s.includes("tim")) return false;
+    if (!s) return false;
+    // Nếu là bước báo cáo hoặc nộp/bái sư thuần túy (không có hành động đánh) -> KHÔNG phải đánh quái
+    if (
+      s.includes("bao cao") ||
+      s.includes("noi chuyen") ||
+      s.includes("gap ") ||
+      s.includes("ve nha") ||
+      s.includes("quay ve")
+    ) {
+      return false;
+    }
+    if ((s.includes("bai su") || s.includes("giao truyen") || s.includes("nop truyen") || s.includes("nhan su phu")) && !s.includes("danh") && !s.includes("lay") && !s.includes("tim")) {
+      return false;
     }
     return (
       s.includes("danh ") ||
@@ -112,30 +122,51 @@
   // Kiểm tra bước nhiệm vụ có phải là Báo cáo / Nói chuyện với NPC hay không
   function isNpcReportStep(stepText) {
     const s = normalizeText(stepText || "");
-    if (isMobKillOrCollectStep(stepText)) return false;
-    return (
+    if (!s) return false;
+
+    // 1. Các hành động nói chuyện / báo cáo / gặp mặt thuần túy
+    if (
       s.includes("bao cao") ||
       s.includes("noi chuyen") ||
       s.includes("gap ") ||
-      s.includes("giao ") ||
-      s.includes("quay ve") ||
       s.includes("ve nha") ||
-      s.includes("bai su") ||
-      s.includes("nhan su phu") ||
-      s.includes("su phu") ||
+      s.includes("quay ve")
+    ) {
+      return true;
+    }
+
+    // 2. Tên Sư phụ & NPC chính tuyến
+    if (
+      s.includes("quy lao") ||
+      s.includes("kame") ||
+      s.includes("truong lao") ||
+      s.includes("guru") ||
+      s.includes("vua vegeta") ||
+      s.includes("vegeta") ||
       s.includes("ong gohan") ||
       s.includes("ong moori") ||
       s.includes("ong paragus") ||
-      s.includes("quy lao") ||
-      s.includes("truong lao") ||
-      s.includes("vua vegeta") ||
       s.includes("bo mong") ||
       s.includes("than meo") ||
       s.includes("thuong de") ||
       s.includes("bunma") ||
       s.includes("dende") ||
       s.includes("appule")
-    );
+    ) {
+      if (!s.includes("danh") && !s.includes("tieu diet") && !s.includes("ha ") && !s.includes("san ")) {
+        return true;
+      }
+    }
+
+    // 3. Bái sư / Giao truyện
+    if (
+      (s.includes("bai su") || s.includes("giao truyen") || s.includes("nop truyen") || s.includes("nhan su phu")) &&
+      !s.includes("danh") && !s.includes("lay") && !s.includes("tim")
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   // Bảng ánh xạ tự động từ tên Quái / Trùm / NPC trong RAM -> Map ID chuẩn xác 100%
@@ -223,9 +254,9 @@
     if (stepNorm.includes("quy bay")) return 17;
 
     // 4. Báo cáo nhiệm vụ / Gặp NPC:
-    if (stepNorm.includes("quy lao") || stepNorm.includes("dao kame")) return 5;
-    if (stepNorm.includes("truong lao") || stepNorm.includes("dao guru")) return 13;
-    if (stepNorm.includes("vua vegeta") || stepNorm.includes("vach nui den")) return 20;
+    if (stepNorm.includes("quy lao") || stepNorm.includes("dao kame") || stepNorm.includes("kame")) return 5;
+    if (stepNorm.includes("truong lao") || stepNorm.includes("dao guru") || stepNorm.includes("guru")) return 13;
+    if (stepNorm.includes("vua vegeta") || stepNorm.includes("vach nui den") || stepNorm.includes("vegeta")) return 20;
     if (stepNorm.includes("bo mong") || stepNorm.includes("rung karin")) return 47;
     if (stepNorm.includes("than meo") || stepNorm.includes("thap karin")) return 46;
     if (stepNorm.includes("thuong de") || stepNorm.includes("than dien")) return 45;
@@ -240,8 +271,14 @@
       stepNorm.includes("bao cao") ||
       stepNorm.includes("noi chuyen") ||
       stepNorm.includes("quay ve") ||
-      stepNorm.includes("ve nha")
+      stepNorm.includes("ve nha") ||
+      stepNorm.includes("gap ")
     ) {
+      if (stepNorm.includes("su phu") || stepNorm.includes("bai su")) {
+        if (cgender === 1) return 13; // Guru (Namếc)
+        if (cgender === 2) return 20; // Vua Vegeta (Xayda)
+        return 5;                     // Quy Lão (Trái Đất)
+      }
       return 21 + (cgender || 0);
     }
 
@@ -672,7 +709,32 @@
       const cName = readIl2CppString(HEAPU32[(cPtr + 376) >> 2]);
       const charX = HEAP32[(cPtr + 80) >> 2];
       const charY = HEAP32[(cPtr + 84) >> 2];
-      const isBoss = (cTypePk === 5 || charID < 0 || cName.toUpperCase().includes("BOSS")) && charHP > 0;
+      const nameUpper = (cName || "").toUpperCase().trim();
+      const isPetOrDisciple = (
+        nameUpper === "$" ||
+        nameUpper.includes("DE TU") ||
+        nameUpper.includes("ĐỆ TỬ") ||
+        nameUpper.startsWith("PET") ||
+        nameUpper.includes("PET") ||
+        nameUpper === "THO NGOC" ||
+        nameUpper === "BUNNY"
+      );
+      const isKnownBoss = (
+        nameUpper.includes("BROLY") ||
+        nameUpper.includes("SUPER") ||
+        nameUpper.includes("BOSS") ||
+        nameUpper.includes("KUKU") ||
+        nameUpper.includes("RAMBO") ||
+        nameUpper.includes("MAP DAU DINH") ||
+        nameUpper.includes("FIDE") ||
+        nameUpper.includes("TAMBORINE") ||
+        nameUpper.includes("AKKUMAN") ||
+        nameUpper.includes("DRUM") ||
+        nameUpper.includes("TIEU DOI TRUONG") ||
+        nameUpper.includes("BLACK GOKU") ||
+        nameUpper.includes("XEN BO HUNG")
+      );
+      const isBoss = !isPetOrDisciple && (cTypePk === 5 || isKnownBoss || (charID <= -1000)) && charHP > 0;
       const charObj = { ptr: cPtr, charID, name: cName || "Nhân vật", hp: charHP, maxHp: charHPFull, x: charX, y: charY, cTypePk, isBoss };
       charsInMap.push(charObj);
       if (isBoss) {
@@ -1175,6 +1237,22 @@
     return true;
   }
 
+  // Tự động yêu cầu đổi sang Khu vực khác (tránh Boss/Super Broly) trong RAM
+  function requestChangeZoneInRam(nextZoneId) {
+    const pickMobStatic = getStaticFieldsPtr(ADDR.PickMob_TypeInfo);
+    const tileMapStatic = getStaticFieldsPtr(ADDR.TileMap_TypeInfo);
+    if (pickMobStatic && tileMapStatic) {
+      const currMap = HEAP32[(tileMapStatic + 124) >> 2];
+      HEAPU8[pickMobStatic + 13] = 1;                  // isGoBack = true
+      HEAP32[(pickMobStatic + 16) >> 2] = currMap;    // mapGoback = current map
+      HEAP32[(pickMobStatic + 20) >> 2] = nextZoneId; // zoneGoback = nextZoneId
+    }
+    // Gửi tín hiệu phím 'm' (109) và 'k' (107) để kích hoạt chuyển khu trong mod
+    pressAsciiKeyInRam(109);
+    pressAsciiKeyInRam(107);
+    return true;
+  }
+
   function startXmapInRam(targetMapId, currentMapId) {
     // 1. Mở khóa ModFunc.gI().canUpdate = 1 để GameScr.update() chạy AutoXmap.Update()!
     ensureModFuncCanUpdate();
@@ -1251,6 +1329,7 @@
     lastMapId: -1,
     lastTaskStepIndex: -1,
     lastSpaceshipTime: 0,
+    lastZoneChangeTime: 0,
     mobTracker: new Map(),
     lastFocusedMobId: -1,
     options: {
@@ -1341,12 +1420,13 @@
 
       const autoMapId = resolveQuestStepToMapId(tm.activeStepName, tm.activeDetail, state.cgender);
       if (autoMapId !== null) {
-        const bossStep = isBossQuestStep(tm.activeStepName);
-        const mobOrCollectStep = !bossStep && (tm.max > 0 || isMobKillOrCollectStep(tm.activeStepName) || isMobKillOrCollectStep(tm.activeDetail));
-        const npcStep = !bossStep && !mobOrCollectStep;
+        const isNpc = isNpcReportStep(tm.activeStepName);
+        const bossStep = !isNpc && isBossQuestStep(tm.activeStepName);
+        const mobOrCollectStep = !isNpc && !bossStep && (tm.max > 0 || isMobKillOrCollectStep(tm.activeStepName));
+        const npcStep = isNpc || (!bossStep && !mobOrCollectStep);
         const isCollect = mobOrCollectStep && tm.max <= 0;
-        const targetKills = bossStep ? 1 : (tm.max > 0 ? tm.max : (mobOrCollectStep ? 1 : 0));
-        const currentKills = (bossStep || isCollect) ? 0 : Math.max(tm.count, bot.stageKilledCount);
+        const targetKills = isNpc ? 0 : (bossStep ? 1 : (tm.max > 0 ? tm.max : (mobOrCollectStep ? 1 : 0)));
+        const currentKills = (isNpc || bossStep || isCollect) ? 0 : Math.max(tm.count, bot.stageKilledCount);
         return {
           isAutoRam: true,
           isBossStep: bossStep,
@@ -1389,8 +1469,9 @@
 
     const stage = activePreset.stages[bot.stageIndex];
     const targetMapId = resolveStageMapId(stage, state);
-    const bossStep = Boolean(stage.isBossStep) || isBossQuestStep(stage.name);
-    const npcStep = Boolean(stage.isNpcStep) || (!bossStep && (stage.targetKills || 0) <= 0);
+    const isNpc = Boolean(stage.isNpcStep) || isNpcReportStep(stage.name);
+    const bossStep = !isNpc && (Boolean(stage.isBossStep) || isBossQuestStep(stage.name));
+    const npcStep = isNpc || (!bossStep && (stage.targetKills || 0) <= 0);
 
     let currentKills = bot.stageKilledCount;
     let targetKills = stage.targetKills || (bossStep ? 1 : 0);
@@ -1602,10 +1683,19 @@
     // Tắt chế độ focusBoss khi làm nhiệm vụ đánh quái thường
     setBossAttackInRam(false, state);
 
-    // 8. KIỂM TRA BOSS TRONG KHU (NẾU BẬT NÉ BOSS KHI ĐÁNH QUÁI THƯỜNG)
+    // 8. KIỂM TRA BOSS TRONG KHU (NẾU BẬT NÉ BOSS KHI ĐÁNH QUÁI THƯỜNG) -> TỰ ĐỘNG ĐỔI KHU
     if (bot.options.avoidBoss && state.bossDetected) {
       setTanSatInRam(false);
-      bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong khu ${state.zoneId}! Đang tạm ngưng đánh...`;
+      const currentZone = (state.zoneId >= 0 && state.zoneId < 30) ? state.zoneId : 0;
+      const nextZoneId = (currentZone + 1) % 15;
+      if (!bot.lastZoneChangeTime || now - bot.lastZoneChangeTime > 2500) {
+        if (bot.options.autoGoback) {
+          setGobackInRam(true, targetMapId, nextZoneId, state.cx, state.cy);
+        }
+        requestChangeZoneInRam(nextZoneId);
+        bot.lastZoneChangeTime = now;
+      }
+      bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong Khu ${state.zoneId}! Đang tự động đổi sang Khu ${nextZoneId}...`;
       return;
     }
 
@@ -1668,7 +1758,7 @@
 
     container.innerHTML = `
       <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-        <span>🐉 NRO DEEP MEMORY BOT v2.4.4</span>
+        <span>🐉 NRO DEEP MEMORY BOT v2.4.5</span>
         <div style="display:flex; gap:6px; align-items:center;">
           <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
           <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
@@ -1726,6 +1816,9 @@
             <input type="checkbox" id="nro-chk-autopick" checked> Tự nhặt vật phẩm
           </label>
           <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+            <input type="checkbox" id="nro-chk-avoidboss" checked> Né Boss (Đổi khu)
+          </label>
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer; grid-column: span 2;">
             <input type="checkbox" id="nro-chk-telepem"> Dịch chuyển đánh (Tele)
           </label>
         </div>
@@ -1801,6 +1894,7 @@
       chkNeSieuQuai: container.querySelector("#nro-chk-nesieuquai"),
       chkGoback: container.querySelector("#nro-chk-goback"),
       chkAutoPick: container.querySelector("#nro-chk-autopick"),
+      chkAvoidBoss: container.querySelector("#nro-chk-avoidboss"),
       chkTelePem: container.querySelector("#nro-chk-telepem"),
       stageName: container.querySelector("#nro-lbl-stagename"),
       progress: container.querySelector("#nro-lbl-progress"),
@@ -1863,11 +1957,13 @@
       bot.options.neSieuQuai = hudRefs.chkNeSieuQuai.checked;
       bot.options.autoGoback = hudRefs.chkGoback.checked;
       bot.options.autoPick = hudRefs.chkAutoPick.checked;
+      bot.options.avoidBoss = hudRefs.chkAvoidBoss.checked;
       bot.options.telePem = hudRefs.chkTelePem.checked;
     };
     hudRefs.chkNeSieuQuai.addEventListener("change", syncCheckboxes);
     hudRefs.chkGoback.addEventListener("change", syncCheckboxes);
     hudRefs.chkAutoPick.addEventListener("change", syncCheckboxes);
+    hudRefs.chkAvoidBoss.addEventListener("change", syncCheckboxes);
     hudRefs.chkTelePem.addEventListener("change", syncCheckboxes);
 
     hudRefs.btnToggle.addEventListener("click", () => {
