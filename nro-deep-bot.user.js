@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
 // @namespace    https://nroweb.com/
-// @version      2.4.6
-// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch, tự né Boss & đổi khu vực.
+// @version      2.4.7
+// @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch, tự sang Khu 1 làm nhiệm vụ, tự về nhà hồi sinh khi chết.
 // @author       Antigravity
 // @match        https://nroweb.com/nro/*
 // @match        http://nroweb.com/nro/*
@@ -81,6 +81,12 @@
       s.includes("king kong") ||
       s.includes("xen bo hung")
     );
+  }
+
+  // Kiểm tra bước nhiệm vụ có phải là nhiệm vụ Tăng / Đạt Sức Mạnh (chỉ cần đánh 1 con quái gần nhất để kích hoạt server cập nhật)
+  function isPowerQuestStep(stepText) {
+    const s = normalizeText(stepText || "");
+    return s.includes("suc manh") || s.includes("tiem nang") || s.includes("suc danh");
   }
 
   // Kiểm tra bước nhiệm vụ có phải là Đánh quái / Nhặt vật phẩm (kể cả khi max = 0 như "Đánh bọn ốc sên lấy truyện (0/0)")
@@ -879,8 +885,28 @@
       HEAP32[(menuPtr + 16) >> 2] = 0; // menuSelectedItem = 0 ("Về nhà")
     }
 
-    // 2. Bật cờ nhấn phím Enter / Center softkey
+    // 2. ChatPopup hoặc InfoDlg khi kiệt sức: bấm Space & Enter để qua
+    const chatPopupStatic = getStaticFieldsPtr(ADDR.ChatPopup_TypeInfo);
+    if (chatPopupStatic) {
+      const currPopup = HEAPU32[(chatPopupStatic + 16) >> 2];
+      const serverPopup = HEAPU32[(chatPopupStatic + 20) >> 2];
+      if ((currPopup && currPopup < wasmBuffer.byteLength) || (serverPopup && serverPopup < wasmBuffer.byteLength)) {
+        pressAsciiKeyInRam(32);
+        pressAsciiKeyInRam(13);
+      }
+    }
+
+    // 3. Gửi cả Enter (13), Space (32), phím '5' (53) vào GameCanvas để xác nhận Về nhà
     pressEnterCenterInRam();
+    pressAsciiKeyInRam(13); // Enter
+    pressAsciiKeyInRam(32); // Space
+    pressAsciiKeyInRam(53); // Phím 5
+
+    // 4. Kích hoạt PickMob.isGoBack = 1 để Mod tự động gọi Service.returnTownFromDead()
+    const pickMobStatic = getStaticFieldsPtr(ADDR.PickMob_TypeInfo);
+    if (pickMobStatic) {
+      HEAPU8[pickMobStatic + 13] = 1;
+    }
     return true;
   }
 
@@ -941,6 +967,7 @@
       if ((currPopup && currPopup < wasmBuffer.byteLength) || (serverPopup && serverPopup < wasmBuffer.byteLength)) {
         pressEnterCenterInRam();
         pressAsciiKeyInRam(32); // Space / Enter để qua nhanh từng dòng hội thoại NPC
+        pressAsciiKeyInRam(13);
         return "💬 Đang bấm qua hội thoại báo cáo NPC...";
       }
     }
@@ -971,6 +998,11 @@
       }
       HEAP32[(menuPtr + 16) >> 2] = bestIdx; // menuSelectedItem = bestIdx
       pressEnterCenterInRam();
+      pressAsciiKeyInRam(13);
+      // Xóa npcFocus để không bị spam mở lại chat
+      if (myCharPtr) {
+        HEAPU32[(myCharPtr + 580) >> 2] = 0;
+      }
       return `📋 Đang chọn mục #${bestIdx + 1} trong Menu NPC...`;
     }
 
@@ -1167,14 +1199,13 @@
   // kết hợp dịch chuyển nhân vật ra cửa nhà (x = 35, y = 336)
   function forceExitHouseInRam(myCharPtr) {
     if (myCharPtr && myCharPtr < wasmBuffer.byteLength) {
-      const cx = HEAP32[(myCharPtr + 80) >> 2];
-      if (cx > 60) {
-        HEAP32[(myCharPtr + 80) >> 2] = 35;  // Đặt tọa độ X ngay cửa trái của nhà
-        HEAP32[(myCharPtr + 84) >> 2] = 336; // Đặt tọa độ Y mặt đất nhà
-      }
+      HEAP32[(myCharPtr + 80) >> 2] = 25;  // Đặt tọa độ X vào hẳn portal cửa trái của nhà
+      HEAP32[(myCharPtr + 84) >> 2] = 336; // Đặt tọa độ Y mặt đất nhà
     }
     // Gửi phím 'j' (106) vào GameCanvas.keyAsciiPress (+536) để gọi ManualXmap.LoadMapLeft()
     pressAsciiKeyInRam(106);
+    // Gửi thêm phím 'a' (97) để nhân vật bước qua cổng dịch chuyển
+    pressAsciiKeyInRam(97);
   }
 
   function setTanSatInRam(enable, options = {}) {
@@ -1402,18 +1433,43 @@
       if (bot.lastTaskStepIndex !== tm.index) {
         bot.lastTaskStepIndex = tm.index;
         resetStageTracking();
+        // Vừa hoàn thành / nhận bước mới -> đóng ngay hộp thoại NPC, xóa npcFocus để không chat lại
+        pressAsciiKeyInRam(27); // ESC
+        const gameCanvasStatic = state.ptrs.gameCanvasStatic;
+        if (gameCanvasStatic) {
+          const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
+          if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
+            HEAPU8[keyPressedPtr + 16 + 12] = 1; // KeyRight / Đóng
+          }
+        }
+        if (state.ptrs.myCharPtr) {
+          HEAPU32[(state.ptrs.myCharPtr + 580) >> 2] = 0; // Xóa npcFocus
+        }
       }
 
-      const autoMapId = resolveQuestStepToMapId(tm.activeStepName, tm.activeDetail, state.cgender);
+      const isPowerStep = isPowerQuestStep(tm.activeStepName);
+      let autoMapId = resolveQuestStepToMapId(tm.activeStepName, tm.activeDetail, state.cgender);
+      if (isPowerStep) {
+        // Nhiệm vụ tăng/đạt sức mạnh: chỉ cần đánh 1 con quái gần nhất để server cập nhật
+        let powerMapId = state.mapId;
+        const noMobMaps = [21, 22, 23, 24, 25, 26, 84, 45, 46];
+        if (noMobMaps.includes(state.mapId) || !state.mobs || state.mobs.length === 0) {
+          if (state.cgender === 1) powerMapId = 8;      // Namếc: Đồi nấm tím
+          else if (state.cgender === 2) powerMapId = 15; // Xayda: Đồi hoang
+          else powerMapId = 1;                          // Trái Đất: Đồi hoa cúc
+        }
+        autoMapId = powerMapId;
+      }
+
       if (autoMapId !== null) {
-        const isNpc = isNpcReportStep(tm.activeStepName);
-        const bossStep = !isNpc && isBossQuestStep(tm.activeStepName);
-        const mobOrCollectStep = !isNpc && !bossStep && (tm.max > 0 || isMobKillOrCollectStep(tm.activeStepName));
+        const isNpc = !isPowerStep && isNpcReportStep(tm.activeStepName);
+        const bossStep = !isNpc && !isPowerStep && isBossQuestStep(tm.activeStepName);
+        const mobOrCollectStep = isPowerStep || (!isNpc && !bossStep && (tm.max > 0 || isMobKillOrCollectStep(tm.activeStepName)));
         const npcStep = isNpc;
-        const unsupported = !isNpc && !bossStep && !mobOrCollectStep;
-        const isCollect = mobOrCollectStep && tm.max <= 0;
-        const targetKills = isNpc ? 0 : (bossStep ? 1 : (tm.max > 0 ? tm.max : (mobOrCollectStep ? 1 : 0)));
-        const currentKills = (isNpc || bossStep || isCollect) ? 0 : Math.max(tm.count, bot.stageKilledCount);
+        const unsupported = !isPowerStep && !isNpc && !bossStep && !mobOrCollectStep;
+        const isCollect = !isPowerStep && mobOrCollectStep && tm.max <= 0;
+        const targetKills = isPowerStep ? 1 : (isNpc ? 0 : (bossStep ? 1 : (tm.max > 0 ? tm.max : (mobOrCollectStep ? 1 : 0))));
+        const currentKills = isPowerStep ? bot.stageKilledCount : ((isNpc || bossStep || isCollect) ? 0 : Math.max(tm.count, bot.stageKilledCount));
         return {
           isAutoRam: true,
           isBossStep: bossStep,
@@ -1533,23 +1589,7 @@
       return;
     }
 
-    // 0b. GIỚI HẠN SỐ LẦN CHẾT: chết >= 5 lần trong 10 phút -> dừng hẳn (tránh chết vòng lặp khi hết đậu)
-    if (state.isDie && !bot.wasDie) {
-      bot.deathTimes = (bot.deathTimes || []).filter(t => now - t < 600000);
-      bot.deathTimes.push(now);
-      if (bot.deathTimes.length >= 5) {
-        bot.running = false;
-        setTanSatInRam(false);
-        stopXmapInRam();
-        bot.statusText = "🛑 Đã chết 5 lần trong 10 phút (có thể hết đậu/quá yếu). Bot dừng để bảo vệ nhân vật.";
-        if (hudRefs && hudRefs.btnToggle) {
-          hudRefs.btnToggle.textContent = "▶ BẮT ĐẦU AUTO";
-          hudRefs.btnToggle.style.background = "#16a34a";
-        }
-        bot.wasDie = state.isDie;
-        return;
-      }
-    }
+    // 0b. Ghi nhận số lần tử trận
     bot.wasDie = state.isDie;
 
     // 0c. XMAP KẸT: cùng một đích quá 90s mà vẫn chưa tới -> dừng & báo
@@ -1578,13 +1618,13 @@
       setBossAttackInRam(false, state);
       stopXmapInRam();
       if (bot.options.autoGoback) {
-        setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
+        setGobackInRam(true, targetMapId, 1, -1, -1);
       }
-      if (!bot.lastReviveTime || now - bot.lastReviveTime > 350) {
+      if (!bot.lastReviveTime || now - bot.lastReviveTime > 300) {
         triggerReviveOrConfirmInRam();
         bot.lastReviveTime = now;
       }
-      bot.statusText = `💀 Nhân vật tử trận (HP: 0)! Đang tự bấm "Kiệt sức -> Về nhà" trong RAM để hồi phục & quay lại ${targetMapName}...`;
+      bot.statusText = `💀 Nhân vật tử trận! Đang bấm "Về nhà" và tự Goback quay lại ${targetMapName}...`;
       return;
     }
 
@@ -1619,15 +1659,12 @@
         bot.houseEnterTime = 0;
       }
 
-      // 3b. Tự động bước ra khỏi cửa nhà (Map 21->0, 22->7, 23->14) bằng LoadMapLeft ('j' = 106) + dịch chuyển tới cửa (x=35)
+      // 3b. Tự động bước ra khỏi cửa nhà (Map 21->0, 22->7, 23->14)
       if (!bot.lastHouseExitTime || now - bot.lastHouseExitTime > 450) {
         forceExitHouseInRam(state.ptrs.myCharPtr);
-        startXmapInRam(targetMapId, state.mapId);
         bot.lastHouseExitTime = now;
-        bot.lastXmapTriggerTime = now;
-        bot.lastXmapTargetId = targetMapId;
       }
-      bot.statusText = `🚪 Đang tự động rời khỏi ${state.mapName} (${state.mapId}) để Xmap tới ${targetMapName} (${targetMapId})...`;
+      bot.statusText = `🚪 Đang tự động rời khỏi ${state.mapName} (${state.mapId}) để ra ngoài làm nhiệm vụ...`;
       return;
     }
     bot.houseEnterTime = 0;
@@ -1693,6 +1730,27 @@
     // 5. ĐÃ ĐẾN ĐÚNG MAP MỤC TIÊU! DỪNG XMAP NẾU CÒN BẬT
     if (state.isXmapRunning) {
       stopXmapInRam();
+    }
+
+    // 5a. TỰ ĐỘNG CHUYỂN SANG KHU 1 KHI VỪA TỚI MAP LÀM NHIỆM VỤ
+    if (state.zoneId === 0 && (!bot.zone1MapDone || bot.zone1MapDone !== state.mapId)) {
+      if (!bot.zone1Tries) bot.zone1Tries = 0;
+      if (bot.zone1Tries < 2) {
+        if (!bot.lastZone1SwitchTime || now - bot.lastZone1SwitchTime > 2500) {
+          requestChangeZoneInRam(1);
+          bot.lastZone1SwitchTime = now;
+          bot.zone1Tries++;
+          bot.statusText = `📍 Đã tới ${targetMapName}, đang tự động chuyển sang Khu 1 để làm nhiệm vụ...`;
+          return;
+        }
+      } else {
+        bot.zone1MapDone = state.mapId;
+        bot.zone1Tries = 0;
+      }
+    }
+    if (state.zoneId === 1) {
+      bot.zone1MapDone = state.mapId;
+      bot.zone1Tries = 0;
     }
 
     // Tự động ăn đậu nếu HP hoặc KI tụt dưới 45% khi đang đánh quái/trùm
@@ -1851,7 +1909,7 @@
 
     container.innerHTML = `
       <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-        <span>🐉 NRO DEEP MEMORY BOT v2.4.6</span>
+        <span>🐉 NRO DEEP MEMORY BOT v2.4.7</span>
         <div style="display:flex; gap:6px; align-items:center;">
           <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
           <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
