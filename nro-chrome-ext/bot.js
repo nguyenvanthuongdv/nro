@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NRO Deep Memory Bot (100% WASM RAM State-Driven)
 // @namespace    https://nroweb.com/
-// @version      2.4.8
+// @version      2.4.9
 // @description  Bot chuyên sâu đọc/ghi trực tiếp bộ nhớ WebAssembly (HEAP32/HEAPU8/Float64) của game.wasm: Tự động di chuyển liên hành tinh qua Trạm Tàu Vũ Trụ (Trái Đất 24, Namếc 25, Xayda 26), tự làm nhiệm vụ Bái Sư & Bang Hội một mạch, tự sang Khu 1 làm nhiệm vụ, tự về nhà hồi sinh khi chết.
 // @author       Antigravity
 // @match        https://nroweb.com/nro/*
@@ -89,42 +89,11 @@
     return s.includes("suc manh") || s.includes("tiem nang") || s.includes("suc danh");
   }
 
-  // Kiểm tra bước nhiệm vụ có phải là Đánh quái / Nhặt vật phẩm (kể cả khi max = 0 như "Đánh bọn ốc sên lấy truyện (0/0)")
-  function isMobKillOrCollectStep(stepText) {
-    const s = normalizeText(stepText || "");
-    if (!s) return false;
-    // Nếu là bước báo cáo hoặc nộp/bái sư thuần túy (không có hành động đánh) -> KHÔNG phải đánh quái
-    if (
-      s.includes("bao cao") ||
-      s.includes("noi chuyen") ||
-      s.includes("gap ") ||
-      s.includes("ve nha") ||
-      s.includes("quay ve")
-    ) {
-      return false;
-    }
-    if ((s.includes("bai su") || s.includes("giao truyen") || s.includes("nop truyen") || s.includes("nhan su phu")) && !s.includes("danh") && !s.includes("lay") && !s.includes("tim")) {
-      return false;
-    }
-    return (
-      s.includes("danh ") ||
-      s.includes("tieu diet") ||
-      s.includes("ha ") ||
-      s.includes("san ") ||
-      s.includes("lay truyen") ||
-      s.includes("tim truyen") ||
-      s.includes("thu thap") ||
-      s.includes("oc sen") ||
-      s.includes("oc muon hon") ||
-      s.includes("quy dau nhon") ||
-      s.includes("than lan") ||
-      s.includes("bulon") ||
-      s.includes("ukulele") ||
-      s.includes("quy map") ||
-      s.includes("heo ") ||
-      s.includes("truyen") ||
-      s.includes("doremon")
-    );
+  // Kiểm tra từ/cụm từ nguyên vẹn với ranh giới từ (tránh "theo" dính "heo", "nha" dính "ha", "hoc" dính "oc")
+  function hasWord(str, word) {
+    if (!str || !word) return false;
+    const re = new RegExp("(?:^|[\\s,.;:!?()\\[\\]\\-_/])" + word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?:$|[\\s,.;:!?()\\[\\]\\-_/])", "i");
+    return re.test(str);
   }
 
   // Kiểm tra bước nhiệm vụ có phải là Báo cáo / Nói chuyện với NPC hay không
@@ -132,43 +101,82 @@
     const s = normalizeText(stepText || "");
     if (!s) return false;
 
-    // 1. Các hành động nói chuyện / báo cáo / gặp mặt thuần túy
+    // 1. Nếu có hành động đánh / săn / tìm kiếm / lấy quái / ốc -> ĐÂY LÀ BƯỚC ĐÁNH QUÁI SĂN VẬT PHẨM, KHÔNG PHẢI BÁO CÁO NPC!
     if (
-      s.includes("bao cao") ||
-      s.includes("noi chuyen") ||
-      s.includes("gap ") ||
-      s.includes("ve nha") ||
-      s.includes("quay ve")
+      s.includes("tieu diet") ||
+      s.includes("thu thap") ||
+      s.includes("tim") ||
+      s.includes("lay") ||
+      s.includes("oc muon hon") ||
+      s.includes("oc sen") ||
+      s.includes("quy dau nhon") ||
+      hasWord(s, "danh") ||
+      hasWord(s, "san") ||
+      hasWord(s, "ha")
     ) {
-      return true;
-    }
-
-    // 2. Tên Sư phụ & NPC chính tuyến (chỉ khi KHÔNG phải bước đánh/tìm)
-    if (isMobKillOrCollectStep(stepText) || s.includes("tim ") || s.includes("danh ") || s.includes("san ")) {
       return false;
     }
+
+    // 2. Các hành động nói chuyện / báo cáo / nộp truyện thuần túy
+    const NPC_ACTIONS = [
+      "bao cao", "noi chuyen", "ve nha", "quay ve",
+      "giao truyen", "nop truyen", "tra truyen",
+      "mang truyen", "dua truyen"
+    ];
+    for (const act of NPC_ACTIONS) {
+      if (s.includes(act)) return true;
+    }
+    if (hasWord(s, "gap")) return true;
+
+    // 3. Tên Sư phụ & NPC chính tuyến
+    const NPC_NAMES = [
+      "quy lao", "truong lao", "vua vegeta", "ong gohan", "ong moori",
+      "ong paragus", "bo mong", "than meo", "thuong de", "bunma",
+      "dende", "appule"
+    ];
+    for (const name of NPC_NAMES) {
+      if (s.includes(name)) return true;
+    }
+
+    // 4. Bái sư thuần túy (chỉ khi không có tìm/lấy/đánh)
+    if (s.includes("bai su") || s.includes("nhan su phu")) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Kiểm tra bước nhiệm vụ có phải là Đánh quái / Nhặt vật phẩm
+  function isMobKillOrCollectStep(stepText) {
+    const s = normalizeText(stepText || "");
+    if (!s) return false;
+
+    // Nếu là bước báo cáo NPC / về nhà / nộp truyện -> KHÔNG phải đánh quái
+    if (isNpcReportStep(stepText)) return false;
+
+    // Các từ khóa hành động tiêu diệt / săn quái (kiểm tra chuẩn ranh giới từ)
     if (
-      s.includes("quy lao") ||
-      s.includes("truong lao") ||
-      s.includes("vua vegeta") ||
-      s.includes("ong gohan") ||
-      s.includes("ong moori") ||
-      s.includes("ong paragus") ||
-      s.includes("bo mong") ||
-      s.includes("than meo") ||
-      s.includes("thuong de") ||
-      s.includes("bunma") ||
-      s.includes("dende") ||
-      s.includes("appule")
+      s.includes("tieu diet") ||
+      s.includes("thu thap") ||
+      hasWord(s, "danh") ||
+      hasWord(s, "san") ||
+      hasWord(s, "ha")
     ) {
       return true;
     }
 
-    // 3. Bái sư / Giao truyện
-    if (
-      (s.includes("bai su") || s.includes("giao truyen") || s.includes("nop truyen") || s.includes("nhan su phu")) &&
-      !s.includes("danh") && !s.includes("lay") && !s.includes("tim")
-    ) {
+    // Tên quái cụ thể
+    const MOB_NAMES = [
+      "oc sen", "oc muon hon", "quy dau nhon", "than lan xanh", "than lan bay",
+      "bulon", "ukulele", "quy map", "heo rung", "heo da xanh", "heo xayda",
+      "khung long", "lon loi", "moc nhan"
+    ];
+    for (const m of MOB_NAMES) {
+      if (s.includes(m)) return true;
+    }
+
+    // Cụm tìm / lấy truyện (chỉ khi không phải báo cáo nộp truyện)
+    if (s.includes("lay truyen") || s.includes("tim truyen") || s.includes("tim cuon truyen")) {
       return true;
     }
 
@@ -194,64 +202,38 @@
     if (stepNorm.includes("ukulele")) return 34;      // Ukulele tại Đông Nam Guru (Namếc) - Map ID 34
     if (stepNorm.includes("quy map")) return 38;      // Quỷ mập tại Bờ Vực Đen (Xayda) - Map ID 38
 
-    // 2. Nhiệm vụ 3 loại Heo:
+    // 2. Nhiệm vụ 3 loại Heo (khớp chuẩn cụm từ nguyên vẹn):
     if (stepNorm.includes("heo rung")) return 27;     // Rừng Bamboo - Map ID 27
     if (stepNorm.includes("heo da xanh")) return 31;  // Núi hoa vàng - Map ID 31
     if (stepNorm.includes("heo xayda")) return 35;    // Rừng cọ - Map ID 35
 
-    // 3. Nhiệm vụ Bái sư (Truyện Doremon tập 2) & các quái nhiệm vụ chính tuyến:
-    // Quái đánh săn rơi Truyện theo từng hành tinh:
-    // - Namếc (cgender = 1): Ốc sên -> Núi hoa vàng (Map ID 31)
-    // - Trái Đất (cgender = 0): Ốc mượn hồn -> Nam Guru (Map ID 33)
-    // - Xayda (cgender = 2): Quỷ đầu nhọn -> Vách núi đen (Map ID 20)
-    if (stepNorm.includes("oc sen") || detailNorm.includes("oc sen")) return 31;       // Ốc sên tại Núi hoa vàng - Map ID 31
-    if (stepNorm.includes("oc muon hon") || detailNorm.includes("oc muon hon")) return 33; // Ốc mượn hồn tại Nam Guru - Map ID 33
-    if (stepNorm.includes("quy dau nhon") || detailNorm.includes("quy dau nhon")) return 20; // Quỷ đầu nhọn tại Vách núi đen - Map ID 20
-    if (stepNorm.includes("than lan xanh")) return 29;// Thằn lằn xanh tại Nam Kamê - Map ID 29
-
-    // Bước Bái Sư / Giao truyện / Báo cáo Sư Phụ theo từng hành tinh:
-    // - Namếc (cgender = 1): Trưởng Lão Guru tại Đảo Guru (Map ID 13)
-    // - Trái Đất (cgender = 0): Quy Lão Kamê tại Đảo Kamê (Map ID 5)
-    // - Xayda (cgender = 2): Vua Vegeta tại Vách Núi Đen (Map ID 20)
-    if (
-      stepNorm.includes("bai su") ||
-      stepNorm.includes("giao truyen") ||
-      stepNorm.includes("nop truyen") ||
-      stepNorm.includes("nhan su phu") ||
-      (stepNorm.includes("su phu") && !stepNorm.includes("danh"))
-    ) {
-      if (cgender === 1) return 13; // Sư phụ Namếc: Trưởng Lão Guru (Đảo Guru - Map 13)
-      if (cgender === 2) return 20; // Sư phụ Xayda: Vua Vegeta (Vách núi đen - Map 20)
-      return 5;                     // Sư phụ Trái Đất: Quy Lão Kamê (Đảo Kamê - Map 5)
-    }
-
-    if (stepNorm.includes("truyen") || detailNorm.includes("doremon") || detailNorm.includes("truyen")) {
-      // Nếu là bước đánh quái tìm/lấy truyện
-      if (
-        stepNorm.includes("danh") ||
-        stepNorm.includes("lay") ||
-        stepNorm.includes("tim") ||
-        stepNorm.includes("san") ||
-        stepNorm.includes("oc") ||
-        detailNorm.includes("danh") ||
-        detailNorm.includes("lay") ||
-        detailNorm.includes("tim") ||
-        detailNorm.includes("oc")
-      ) {
-        if (detailNorm.includes("oc sen") || stepNorm.includes("oc sen")) return 31; // Núi hoa vàng (Map 31)
-        if (detailNorm.includes("oc muon hon") || stepNorm.includes("oc muon hon")) return 33; // Nam Guru (Map 33)
-        if (detailNorm.includes("quy dau nhon") || stepNorm.includes("quy dau nhon")) return 20; // Vách núi đen (Map 20)
-        if (cgender === 1) return 31; // Namếc: Núi hoa vàng (Map 31)
-        if (cgender === 2) return 20; // Xayda: Vách núi đen (Map 20)
-        return 33;                    // Trái Đất: Nam Guru (Map 33)
+    // 3. Nhiệm vụ Bái Sư / Tìm Truyện Doremon tập 2:
+    const isComicQuest = stepNorm.includes("truyen") || detailNorm.includes("truyen") || detailNorm.includes("doremon");
+    if (isComicQuest) {
+      // 3a. Nếu là bước nộp truyện / bái sư (báo cáo NPC):
+      if (isNpcReportStep(stepText)) {
+        if (cgender === 1) return 13; // Sư phụ Namếc: Trưởng Lão Guru (Đảo Guru - Map 13)
+        if (cgender === 2) return 20; // Sư phụ Xayda: Vua Vegeta (Vách núi đen - Map 20)
+        return 5;                     // Sư phụ Trái Đất: Quy Lão Kamê (Đảo Kamê - Map 5)
       }
-      // Nếu là bước nộp / giao / bái sư
-      if (cgender === 1) return 13; // Sư phụ Namếc: Đảo Guru (Map 13)
-      if (cgender === 2) return 20; // Sư phụ Xayda: Vách núi đen (Map 20)
-      return 5;                     // Sư phụ Trái Đất: Đảo Kamê (Map 5)
+
+      // 3b. Bước đánh quái tìm truyện:
+      // Ưu tiên nếu stepNorm chỉ đích danh quái:
+      if (stepNorm.includes("oc muon hon")) return 33; // Ốc mượn hồn tại Nam Guru (Map 33)
+      if (stepNorm.includes("oc sen")) return 31;      // Ốc sên tại Núi hoa vàng (Map 31)
+      if (stepNorm.includes("quy dau nhon")) return 20;// Quỷ đầu nhọn tại Vách núi đen (Map 20)
+
+      // Nếu tiêu đề chung chung ("Tìm cuốn truyện...", "Lấy truyện tranh"):
+      // Phân theo hành tinh của nhân vật (cgender), không để detailNorm làm lệch hành tinh
+      if (cgender === 1) return 31; // Namếc: Ốc sên (Núi hoa vàng - Map 31)
+      if (cgender === 2) return 20; // Xayda: Quỷ đầu nhọn (Vách núi đen - Map 20)
+      return 33;                    // Trái Đất: Ốc mượn hồn (Nam Guru - Map 33)
     }
 
-    if (stepNorm.includes("moc nhan")) return cgender === 0 ? 0 : (cgender === 1 ? 7 : 14);
+    if (stepNorm.includes("oc sen")) return 31;
+    if (stepNorm.includes("oc muon hon")) return 33;
+    if (stepNorm.includes("quy dau nhon")) return 20;
+    if (stepNorm.includes("than lan xanh")) return 29;
     if (stepNorm.includes("khung long me")) return 2;
     if (stepNorm.includes("khung long")) return 1;
     if (stepNorm.includes("lon loi me")) return 9;
@@ -709,6 +691,9 @@
 
     // Đọc danh sách Nhân vật / Boss trong khu (GameScr.vCharInMap tại +240)
     // Offset chuẩn Fn 20185 (ModFunc.AutoFocusBoss): charID (+116), cTypePk (+553), cName (+376)
+    // Safe maps (Làng 0/7/14, Nhà 21/22/23, Sư phụ 5/13/20, Trạm tàu 24/25/26...) KHÔNG BAO GIỜ CÓ BOSS TẤN CÔNG
+    const SAFE_TOWN_MAPS = [0, 5, 7, 13, 14, 20, 21, 22, 23, 24, 25, 26, 45, 46, 52, 84];
+    const isSafeMap = SAFE_TOWN_MAPS.includes(mapId);
     const vCharPtr = HEAPU32[(gameScrStatic + 240) >> 2];
     const charPtrs = readMyVector(vCharPtr);
     let bossDetected = null;
@@ -726,6 +711,7 @@
       const nameUpper = (cName || "").toUpperCase().trim();
       const isPetOrDisciple = (
         nameUpper === "$" ||
+        nameUpper.startsWith("$") ||
         nameUpper.includes("DE TU") ||
         nameUpper.includes("ĐỆ TỬ") ||
         nameUpper.startsWith("PET") ||
@@ -748,7 +734,8 @@
         nameUpper.includes("BLACK GOKU") ||
         nameUpper.includes("XEN BO HUNG")
       );
-      const isBoss = !isPetOrDisciple && (cTypePk === 5 || isKnownBoss || (charID <= -1000)) && charHP > 0;
+      // Boss thực sự: không ở Map an toàn, không phải đệ tử/pet, và khớp tên Boss hoặc có cTypePk=5 với máu lớn > 100k
+      const isBoss = !isSafeMap && !isPetOrDisciple && (isKnownBoss || (cTypePk === 5 && charHPFull > 100000)) && charHP > 0;
       const charObj = { ptr: cPtr, charID, name: cName || "Nhân vật", hp: charHP, maxHp: charHPFull, x: charX, y: charY, cTypePk, isBoss };
       charsInMap.push(charObj);
       if (isBoss) {
@@ -860,19 +847,20 @@
   // 5. ĐIỀU KHIỂN TRỰC TIẾP TRONG RAM (TÀN SÁT, XMAP, BOSS, NPC, HỒI SINH, RỜI NHÀ)
   // ============================================================================
   // Mô phỏng sự kiện click / chạm trực tiếp trên thẻ Canvas WebGL của game
-  function simulateCanvasClick(xRatio, yRatio) {
+  // Tách pointerdown và pointerup cách nhau holdMs (mặc định 80ms) để đúng chuẩn web browser
+  function simulateCanvasClick(xRatio, yRatio, holdMs = 80) {
     try {
       const canvas = document.querySelector("canvas") || document.getElementById("canvas");
       if (!canvas) return false;
       const rect = canvas.getBoundingClientRect();
       const clientX = rect.left + rect.width * xRatio;
       const clientY = rect.top + rect.height * yRatio;
-      const eventInit = {
+      const baseInit = {
         bubbles: true,
         cancelable: true,
         view: window,
-        clientX: clientX,
-        clientY: clientY,
+        clientX,
+        clientY,
         screenX: clientX,
         screenY: clientY,
         pageX: clientX,
@@ -880,34 +868,48 @@
         button: 0,
         buttons: 1
       };
+
       if (typeof PointerEvent !== "undefined") {
-        canvas.dispatchEvent(new PointerEvent("pointerdown", eventInit));
-        canvas.dispatchEvent(new PointerEvent("pointerup", eventInit));
+        canvas.dispatchEvent(new PointerEvent("pointerdown", baseInit));
       }
-      canvas.dispatchEvent(new MouseEvent("mousedown", eventInit));
-      canvas.dispatchEvent(new MouseEvent("mouseup", eventInit));
-      canvas.dispatchEvent(new MouseEvent("click", eventInit));
+      canvas.dispatchEvent(new MouseEvent("mousedown", baseInit));
+
+      setTimeout(() => {
+        const upInit = Object.assign({}, baseInit, { buttons: 0 });
+        if (typeof PointerEvent !== "undefined") {
+          canvas.dispatchEvent(new PointerEvent("pointerup", upInit));
+        }
+        canvas.dispatchEvent(new MouseEvent("mouseup", upInit));
+        canvas.dispatchEvent(new MouseEvent("click", upInit));
+      }, holdMs);
+
       return true;
     } catch (e) {
       return false;
     }
   }
 
-  // Phát sự kiện bàn phím KeyboardEvent lên window, document và canvas
-  function dispatchKeyEvent(type, key, keyCode) {
+  // Phát sự kiện bàn phím KeyboardEvent lên canvas (tự động nổi bọt lên document & window, không bắn 3 lần)
+  // Tự động gửi kèm sự kiện keyup sau 60ms để đúng chuẩn vòng đời phím
+  function dispatchKeyEvent(type, key, keyCode, code = "") {
     try {
-      const event = new KeyboardEvent(type, {
+      const target = document.querySelector("canvas") || document.getElementById("canvas") || window;
+      const eventInit = {
         key: key,
-        code: key,
+        code: code || ("Key" + key.toUpperCase()),
         keyCode: keyCode,
         which: keyCode,
         bubbles: true,
         cancelable: true
-      });
-      window.dispatchEvent(event);
-      document.dispatchEvent(event);
-      const canvas = document.querySelector("canvas") || document.getElementById("canvas");
-      if (canvas) canvas.dispatchEvent(event);
+      };
+      target.dispatchEvent(new KeyboardEvent(type, eventInit));
+      if (type === "keydown") {
+        setTimeout(() => {
+          try {
+            target.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+          } catch (_) {}
+        }, 60);
+      }
       return true;
     } catch (e) {
       return false;
@@ -922,70 +924,80 @@
     return true;
   }
 
-  // Bấm phím Enter / Center softkey (index 5, 15, 25 trong GameCanvas.keyPressed tại +60)
-  function pressEnterCenterInRam() {
+  // Nhấn và tự động nhả phím trong GameCanvas.keyPressed (+60) sau holdMs
+  function tapKey(i, holdMs = 80) {
     const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
-    if (!gameCanvasStatic) return false;
+    if (!gameCanvasStatic) return;
     const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
     if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
-      HEAPU8[keyPressedPtr + 16 + 5] = 1;
-      HEAPU8[keyPressedPtr + 16 + 15] = 1;
-      HEAPU8[keyPressedPtr + 16 + 25] = 1;
+      HEAPU8[keyPressedPtr + 16 + i] = 1;
+      setTimeout(() => {
+        const gc = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
+        if (!gc) return;
+        const kp = HEAPU32[(gc + 60) >> 2];
+        if (kp && kp < wasmBuffer.byteLength) {
+          HEAPU8[kp + 16 + i] = 0;
+        }
+      }, holdMs);
     }
+  }
+
+  // Bấm phím Enter / Center softkey (tự động nhả sau 80ms)
+  function pressEnterCenterInRam() {
+    tapKey(5, 80);
+    tapKey(25, 80);
     return true;
   }
 
-  // Bấm nút "Về nhà" khi chết (xử lý đồng thời cả phím RAM, chuyển tiêu điểm sang nút giữa, Canvas Pointer Click và DOM Key)
-  // Chuẩn GameScr.updateKey: Nút Chờ [0] | Về nhà [1] | Hồi sinh [2]
+  // Bấm nút "Về nhà" khi chết: Click trực tiếp vào nút Về nhà (giữa đáy màn hình) + gửi Enter
+  // Nút 0: "Chờ" (đóng dialog nằm chờ), Nút 1: "Về nhà" (hồi sinh), Nút 2: "Hồi sinh ngay (1 ngọc)"
+  // Tuyệt đối không chọn 0 (kẹt nằm chờ) và không chọn 2 (tốn ngọc)!
   function triggerReviveOrConfirmInRam() {
     const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
 
-    // 1. Nếu Menu "Về nhà / Hồi sinh tại chỗ" đang mở (GameCanvas.menu tại +196, showMenu tại +8):
+    // 1. Nếu Menu "Về nhà / Hồi sinh tại chỗ" J2ME đang mở:
+    // Quét tìm đúng mục có chữ "về nhà" / "về", mặc định chọn index 1 ("Về nhà"), TUYỆT ĐỐI không chọn 0 ("Chờ")
     if (gameCanvasStatic) {
       const menuPtr = HEAPU32[(gameCanvasStatic + 196) >> 2];
       if (menuPtr && menuPtr < wasmBuffer.byteLength && HEAPU8[menuPtr + 8] === 1) {
-        HEAP32[(menuPtr + 16) >> 2] = 0; // menuSelectedItem = 0 ("Về nhà")
+        const menuItemsVec = HEAPU32[(menuPtr + 12) >> 2];
+        const cmdPtrs = readMyVector(menuItemsVec);
+        let bestIdx = 1; // Mặc định nút giữa là "Về nhà" (index 1)
+        for (let i = 0; i < cmdPtrs.length; i++) {
+          const caption = normalizeText(readIl2CppString(HEAPU32[(cmdPtrs[i] + 16) >> 2]));
+          if (caption.includes("ve nha") || caption.includes("ve")) {
+            bestIdx = i;
+            break;
+          }
+        }
+        HEAP32[(menuPtr + 16) >> 2] = bestIdx; // menuSelectedItem = bestIdx (Về nhà)
+        tapKey(5, 80);
+      } else {
+        // Nếu menu chưa hiện hoặc đã bị đóng (nằm chờ): click vào giữa màn hình & bấm Space để mở lại bảng
+        simulateCanvasClick(0.50, 0.50, 60);
+        pressAsciiKeyInRam(32);
       }
     }
 
-    // 2. ChatPopup hoặc InfoDlg khi kiệt sức: bấm Space & Enter để qua
+    // 2. ChatPopup hoặc InfoDlg khi kiệt sức: bấm Space qua nhanh
     const chatPopupStatic = getStaticFieldsPtr(ADDR.ChatPopup_TypeInfo);
     if (chatPopupStatic) {
       const currPopup = HEAPU32[(chatPopupStatic + 16) >> 2];
       const serverPopup = HEAPU32[(chatPopupStatic + 20) >> 2];
       if ((currPopup && currPopup < wasmBuffer.byteLength) || (serverPopup && serverPopup < wasmBuffer.byteLength)) {
         pressAsciiKeyInRam(32);
-        pressAsciiKeyInRam(13);
       }
     }
 
-    // 3. DI CHUYỂN TIÊU ĐIỂM SANG NÚT [VỀ NHÀ] (Nút ở giữa trong 3 nút: Chờ [0] | Về nhà [1] | Hồi sinh [2])
-    if (gameCanvasStatic) {
-      const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
-      if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
-        HEAPU8[keyPressedPtr + 16 + 6] = 1;  // Key 6 (Right)
-        HEAPU8[keyPressedPtr + 16 + 12] = 1; // Key 12 (Right softkey / Next button)
-        HEAPU8[keyPressedPtr + 16 + 24] = 1; // ArrowRight
-      }
-    }
-    pressAsciiKeyInRam(100); // 'd' (Right)
-    dispatchKeyEvent("keydown", "ArrowRight", 39);
-    dispatchKeyEvent("keydown", "d", 68);
+    // 3. Click chuột/chạm trực tiếp vào nút [VỀ NHÀ] (Nút màu cam ở giữa đáy màn hình game: x = 44%, y = 79%)
+    simulateCanvasClick(0.44, 0.79, 80);
 
-    // 4. BẤM XÁC NHẬN [VỀ NHÀ] (Enter / Space / Phím 5)
-    pressEnterCenterInRam();
+    // 4. Bấm Enter xác nhận
     pressAsciiKeyInRam(13); // Enter
-    pressAsciiKeyInRam(32); // Space
-    pressAsciiKeyInRam(53); // Phím 5
-    dispatchKeyEvent("keydown", "Enter", 13);
-    dispatchKeyEvent("keydown", " ", 32);
+    tapKey(5, 80);
+    dispatchKeyEvent("keydown", "Enter", 13, "Enter");
 
-    // 5. CLICK TRỰC TIẾP LÊN NÚT [VỀ NHÀ] (Nút màu cam ở giữa đáy màn hình game: x ~ 44% - 50%, y ~ 78% - 82%)
-    simulateCanvasClick(0.44, 0.78);
-    simulateCanvasClick(0.50, 0.80);
-    simulateCanvasClick(0.44, 0.82);
-
-    // 6. Kích hoạt PickMob.isGoBack = 1 để Mod tự động gọi Service.returnTownFromDead()
+    // 5. Kích hoạt PickMob.isGoBack = 1 để Mod tự động gọi Service.returnTownFromDead()
     const pickMobStatic = getStaticFieldsPtr(ADDR.PickMob_TypeInfo);
     if (pickMobStatic) {
       HEAPU8[pickMobStatic + 13] = 1;
@@ -1000,8 +1012,13 @@
     if (modFuncStatic) {
       const modFuncInstance = HEAPU32[(modFuncStatic + 0) >> 2];
       if (modFuncInstance && modFuncInstance < wasmBuffer.byteLength) {
-        HEAPU8[modFuncInstance + 161] = enable ? 1 : 0; // focusBoss
-        HEAPU8[modFuncInstance + 28] = enable ? 1 : 0;  // autoAttack
+        if (enable) {
+          if (HEAPU8[modFuncInstance + 161] !== 1) HEAPU8[modFuncInstance + 161] = 1; // focusBoss
+          if (HEAPU8[modFuncInstance + 28] !== 1) HEAPU8[modFuncInstance + 28] = 1;  // autoAttack
+        } else {
+          if (HEAPU8[modFuncInstance + 161] !== 0) HEAPU8[modFuncInstance + 161] = 0; // Tắt focusBoss
+          // KHÔNG ghi đè autoAttack về 0 khi tắt boss, để Tàn Sát tự quản lý autoAttack khi farm quái thường!
+        }
       }
     }
 
@@ -1278,17 +1295,16 @@
     return true;
   }
 
-  // Tự động rời khỏi Nhà (Map 21, 22, 23) ra Làng (Map 0, 7, 14) bằng ManualXmap.LoadMapLeft ('j' = 106)
-  // kết hợp dịch chuyển nhân vật ra cửa nhà (x = 35, y = 336)
+  // Tự động rời khỏi Nhà (Map 21, 22, 23) ra Làng (Map 0, 7, 14)
+  // Đặt nhân vật vào cổng dịch chuyển cửa trái (x = 25, y = 336) và bước qua cửa
   function forceExitHouseInRam(myCharPtr) {
     if (myCharPtr && myCharPtr < wasmBuffer.byteLength) {
-      HEAP32[(myCharPtr + 80) >> 2] = 25;  // Đặt tọa độ X vào hẳn portal cửa trái của nhà
-      HEAP32[(myCharPtr + 84) >> 2] = 336; // Đặt tọa độ Y mặt đất nhà
+      HEAP32[(myCharPtr + 80) >> 2] = 25;  // Tọa độ X portal cửa trái nhà
+      HEAP32[(myCharPtr + 84) >> 2] = 336; // Tọa độ Y mặt đất nhà
     }
-    // Gửi phím 'j' (106) vào GameCanvas.keyAsciiPress (+536) để gọi ManualXmap.LoadMapLeft()
-    pressAsciiKeyInRam(106);
-    // Gửi thêm phím 'a' (97) để nhân vật bước qua cổng dịch chuyển
-    pressAsciiKeyInRam(97);
+    pressAsciiKeyInRam(97); // 'a' (bước qua cổng)
+    tapKey(4, 80);          // Key 4 / Left
+    dispatchKeyEvent("keydown", "a", 65, "KeyA");
   }
 
   function setTanSatInRam(enable, options = {}) {
@@ -1338,63 +1354,114 @@
     return true;
   }
 
-  // Tự động chuyển sang Khu vực chỉ định (Zone 1 khi tới map nhiệm vụ hoặc đổi khu né Boss)
-  function requestChangeZoneInRam(nextZoneId) {
+  // Khởi động quá trình đổi khu vực có quản lý trạng thái, tránh tự hủy hoặc xung đột
+  function startChangeZone(nextZoneId, mapId) {
     const pickMobStatic = getStaticFieldsPtr(ADDR.PickMob_TypeInfo);
     const tileMapStatic = getStaticFieldsPtr(ADDR.TileMap_TypeInfo);
-    if (pickMobStatic && tileMapStatic) {
-      const currMap = HEAP32[(tileMapStatic + 124) >> 2];
+    const currMap = (tileMapStatic ? HEAP32[(tileMapStatic + 124) >> 2] : 0) || mapId;
+
+    if (pickMobStatic) {
       HEAPU8[pickMobStatic + 13] = 1;                  // isGoBack = true
       HEAP32[(pickMobStatic + 16) >> 2] = currMap;    // mapGoback = current map
       HEAP32[(pickMobStatic + 20) >> 2] = nextZoneId; // zoneGoback = nextZoneId
     }
 
-    const targetZone = (nextZoneId !== undefined && nextZoneId >= 0) ? nextZoneId : 1;
+    bot.zoneChangeState = {
+      active: true,
+      targetZone: (nextZoneId !== undefined && nextZoneId >= 0) ? nextZoneId : 1,
+      mapId: currMap,
+      startTime: Date.now(),
+      step: 0,
+      lastStepTime: Date.now()
+    };
+    setTanSatInRam(false); // Tạm dừng Tàn Sát để không xung đột thao tác trên màn hình
+    return true;
+  }
 
-    // Bước 1 (0ms): Gửi phím 'm' (109) để mở bảng Chọn khu vực
-    pressAsciiKeyInRam(109);
-    dispatchKeyEvent("keydown", "m", 77);
+  // Wrapper để gọi đổi khu từ nút hoặc lệnh bên ngoài
+  function requestChangeZoneInRam(nextZoneId) {
+    const tileMapStatic = getStaticFieldsPtr(ADDR.TileMap_TypeInfo);
+    const currMap = tileMapStatic ? HEAP32[(tileMapStatic + 124) >> 2] : 0;
+    return startChangeZone(nextZoneId, currMap);
+  }
 
-    // Bước 2 (sau 150ms khi bảng đã mở): Chọn hàng mục tiêu trong bảng Chọn khu vực
-    // Trong bảng khu vực (screenshot media_1794152084991_5bcca6a0.jpg):
-    // Cột danh sách nằm ở lề trái: x ~ 8% - 12% chiều rộng màn hình.
-    // Hàng 0: y ~ 32% chiều cao màn hình.
-    // Hàng 1 (Khu 1): y ~ 38% chiều cao màn hình (cách nhau ~6% chiều cao mỗi hàng).
-    setTimeout(() => {
-      // 2a. Di chuyển con trỏ phím xuống hàng mong muốn (mặc định mở ra là hàng 0)
-      const gameCanvasStatic = getStaticFieldsPtr(ADDR.GameCanvas_TypeInfo);
-      if (gameCanvasStatic) {
-        const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
-        if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
-          HEAPU8[keyPressedPtr + 16 + 8] = 1;  // Key 8 (Down)
-          HEAPU8[keyPressedPtr + 16 + 22] = 1; // ArrowDown
-        }
+  // Xử lý từng bước đổi khu theo nhịp thời gian mạng thực tế, kiểm chứng kết quả trong RAM
+  function handleZoneChangeStep(state, now) {
+    const zs = bot.zoneChangeState;
+    if (!zs || !zs.active) return false;
+
+    // 1. Kiểm tra thành công: Zone ID trong RAM đã đổi sang đúng khu mục tiêu!
+    if (state.zoneId === zs.targetZone) {
+      bot.zone1MapDone = state.mapId;
+      bot.zoneChangeState = null;
+      pressAsciiKeyInRam(27); // Gửi ESC 1 lần duy nhất đóng bảng khu nếu còn mở
+      simulateCanvasClick(0.275, 0.13, 80); // Click nút [X] màu đỏ đóng bảng khu nếu còn mở
+      dispatchKeyEvent("keydown", "Escape", 27, "Escape");
+      bot.statusText = `✅ Đã chuyển thành công sang Khu ${state.zoneId}! Bắt đầu làm nhiệm vụ.`;
+      return true;
+    }
+
+    // 2. Timeout: Quá 8 giây không đổi được -> dừng đổi và tiếp tục với khu hiện tại
+    if (now - zs.startTime > 8000) {
+      bot.zone1MapDone = state.mapId; // Đánh dấu để không kẹt vòng lặp đổi khu tại map này
+      bot.zoneChangeState = null;
+      pressAsciiKeyInRam(27); // Đóng bảng khu
+      simulateCanvasClick(0.275, 0.13, 80); // Click nút [X] màu đỏ đóng bảng khu
+      dispatchKeyEvent("keydown", "Escape", 27, "Escape");
+      bot.statusText = `⚠️ Đổi sang Khu ${zs.targetZone} không thành công sau 8s. Tiếp tục ở Khu ${state.zoneId}.`;
+      return true;
+    }
+
+    // Bước 0 (0ms): Bấm phím 'm' mở bảng Chọn khu vực
+    if (zs.step === 0) {
+      pressAsciiKeyInRam(109); // 'm'
+      dispatchKeyEvent("keydown", "m", 77, "KeyM");
+      zs.step = 1;
+      zs.lastStepTime = now;
+      bot.statusText = `🔄 Đang mở bảng chọn khu để chuyển sang Khu ${zs.targetZone}...`;
+      return true;
+    }
+
+    // Bước 1 (chờ 450ms để server gửi danh sách khu và bảng hiển thị trên màn hình):
+    // Chọn dòng khu vực mục tiêu
+    if (zs.step === 1 && now - zs.lastStepTime >= 450) {
+      if (zs.targetZone === 1) {
+        tapKey(8, 80); // Key 8 / Down
+        pressAsciiKeyInRam(115); // 's' (Down)
+        dispatchKeyEvent("keydown", "ArrowDown", 40, "ArrowDown");
       }
-      pressAsciiKeyInRam(115); // 's' (Down)
-      dispatchKeyEvent("keydown", "ArrowDown", 40);
-      dispatchKeyEvent("keydown", "s", 83);
+      const targetYRatio = Math.min(0.85, 0.36 + zs.targetZone * 0.06);
+      simulateCanvasClick(0.16, targetYRatio, 80);
+      zs.step = 2;
+      zs.lastStepTime = now;
+      bot.statusText = `🔄 Đang chọn Khu ${zs.targetZone} trong danh sách...`;
+      return true;
+    }
 
-      // 2b. Click chuột/cảm ứng trực tiếp vào ô Khu vực mục tiêu (Khu 1 = y 0.38)
-      const targetYRatio = Math.min(0.85, 0.32 + targetZone * 0.06);
-      simulateCanvasClick(0.11, targetYRatio);
-      simulateCanvasClick(0.08, targetYRatio);
-    }, 150);
-
-    // Bước 3 (sau 350ms): Bấm Enter xác nhận chọn khu
-    setTimeout(() => {
+    // Bước 2 (chờ 350ms sau khi chọn): Bấm Enter xác nhận
+    if (zs.step === 2 && now - zs.lastStepTime >= 350) {
+      const targetYRatio = Math.min(0.85, 0.36 + zs.targetZone * 0.06);
+      simulateCanvasClick(0.16, targetYRatio, 80);
       pressEnterCenterInRam();
       pressAsciiKeyInRam(13); // Enter
-      dispatchKeyEvent("keydown", "Enter", 13);
-    }, 350);
+      dispatchKeyEvent("keydown", "Enter", 13, "Enter");
+      zs.step = 3;
+      zs.lastStepTime = now;
+      bot.statusText = `🔄 Đang xác nhận vào Khu ${zs.targetZone}...`;
+      return true;
+    }
 
-    // Bước 4 (sau 650ms): Đóng bảng Chọn khu vực nếu còn mở để không che màn hình
-    setTimeout(() => {
+    // Bước 3 (chờ 500ms): Đóng bảng chọn khu
+    if (zs.step === 3 && now - zs.lastStepTime >= 500) {
       pressAsciiKeyInRam(27); // ESC
-      dispatchKeyEvent("keydown", "Escape", 27);
-      // Click nút [X] màu đỏ ở góc trên phải bảng khu (x ~ 28%, y ~ 13%)
-      simulateCanvasClick(0.28, 0.13);
-    }, 650);
+      simulateCanvasClick(0.275, 0.13, 80); // Click nút [X] màu đỏ
+      dispatchKeyEvent("keydown", "Escape", 27, "Escape");
+      zs.step = 4;
+      zs.lastStepTime = now;
+      return true;
+    }
 
+    bot.statusText = `⏳ Đang đợi server chuyển sang Khu ${zs.targetZone}...`;
     return true;
   }
 
@@ -1557,33 +1624,18 @@
   function getActiveTaskRequirement(state) {
     const preset = QUEST_PRESETS[bot.presetKey];
 
-    // CHẾ ĐỘ 1: TỰ ĐỘNG 100% ĐỌC TỪ NHIỆM VỤ ĐANG LÀM TRONG RAM (Char.taskMaint)
+    // CHẾ ĐỘ 1: TỰ ĐỘNG 100% ĐỌC TỪ NHIỆM VỤ ĐANG LÀM TRONG RAM (Char.taskMaint) - HÀM ĐỌC THUẦN TÚY, KHÔNG GÂY TÁC DỤNG PHỤ INPUT
     if (preset && preset.autoFromRam && state.taskMaint) {
       const tm = state.taskMaint;
-      if (bot.lastTaskStepIndex !== tm.index) {
-        bot.lastTaskStepIndex = tm.index;
-        resetStageTracking();
-        // Vừa hoàn thành / nhận bước mới -> đóng ngay hộp thoại NPC, xóa npcFocus để không chat lại
-        pressAsciiKeyInRam(27); // ESC
-        const gameCanvasStatic = state.ptrs.gameCanvasStatic;
-        if (gameCanvasStatic) {
-          const keyPressedPtr = HEAPU32[(gameCanvasStatic + 60) >> 2];
-          if (keyPressedPtr && keyPressedPtr < wasmBuffer.byteLength) {
-            HEAPU8[keyPressedPtr + 16 + 12] = 1; // KeyRight / Đóng
-          }
-        }
-        if (state.ptrs.myCharPtr) {
-          HEAPU32[(state.ptrs.myCharPtr + 580) >> 2] = 0; // Xóa npcFocus
-        }
-      }
 
       const isPowerStep = isPowerQuestStep(tm.activeStepName);
       let autoMapId = resolveQuestStepToMapId(tm.activeStepName, tm.activeDetail, state.cgender);
       if (isPowerStep) {
         // Nhiệm vụ tăng/đạt sức mạnh: chỉ cần đánh 1 con quái gần nhất để server cập nhật
         let powerMapId = state.mapId;
-        const noMobMaps = [21, 22, 23, 24, 25, 26, 84, 45, 46];
-        if (noMobMaps.includes(state.mapId) || !state.mobs || state.mobs.length === 0) {
+        const noMobMaps = [21, 22, 23, 24, 25, 26, 84, 45, 46, 52];
+        // Chỉ đổi sang map tập luyện nếu đang ở map không thể có quái (nhà, trạm tàu, siêu thị...)
+        if (noMobMaps.includes(state.mapId)) {
           if (state.cgender === 1) powerMapId = 8;      // Namếc: Đồi nấm tím
           else if (state.cgender === 2) powerMapId = 15; // Xayda: Đồi hoang
           else powerMapId = 1;                          // Trái Đất: Đồi hoa cúc
@@ -1694,6 +1746,61 @@
 
     if (!state || !bot.running) return;
 
+    const now = Date.now();
+
+    // ============================================================================
+    // 0. XỬ LÝ NHÂN VẬT CHẾT (ĐẶT Ở ĐẦU TIÊN: LUÔN ƯU TIÊN HÀNG ĐẦU MỌI TRƯỜNG HỢP)
+    // ============================================================================
+    if (state.isDie) {
+      setTanSatInRam(false);
+      setBossAttackInRam(false, state);
+      stopXmapInRam();
+      bot.zoneChangeState = null; // Hủy phiên đổi khu nếu đang diễn ra
+      bot.zone1MapDone = null;
+
+      if (!bot.isDyingState) {
+        bot.isDyingState = true;
+        bot.deathCount = (bot.deathCount || 0) + 1;
+        bot.deathStartTime = now;
+        if (bot.deathCount >= 5) {
+          bot.running = false;
+          bot.statusText = "🛑 Nhân vật tử trận liên tục 5 lần tại cùng bước! Tạm dừng Auto.";
+          document.title = "⚠️ [CHẾT 5 LẦN] NRO Bot đã dừng!";
+          if (hudRefs && hudRefs.btnToggle) {
+            hudRefs.btnToggle.textContent = "▶ BẮT ĐẦU AUTO";
+            hudRefs.btnToggle.style.background = "#16a34a";
+          }
+          return;
+        }
+      }
+
+      // Watchdog kiệt sức quá 20s không hồi sinh được -> dừng an toàn
+      if (now - bot.deathStartTime > 20000) {
+        bot.running = false;
+        bot.statusText = "🛑 Không thể hồi sinh về nhà sau 20s! Hãy tự bấm về nhà.";
+        document.title = "⚠️ [KẸT HỒI SINH] NRO Bot đã dừng!";
+        return;
+      }
+
+      // Giữ GoBack để mod đưa nhân vật trở lại
+      if (bot.options.autoGoback && bot.lastTargetMapId) {
+        setGobackInRam(true, bot.lastTargetMapId, 1, -1, -1);
+      }
+
+      // Bấm nút Về Nhà mỗi 800ms
+      if (!bot.lastReviveTime || now - bot.lastReviveTime > 800) {
+        triggerReviveOrConfirmInRam();
+        bot.lastReviveTime = now;
+      }
+      bot.statusText = `💀 Nhân vật tử trận (lần ${bot.deathCount}/5)! Đang bấm "Về nhà" và tự Goback...`;
+      return;
+    }
+    // Khi nhân vật còn sống: xóa cờ tử trận
+    bot.isDyingState = false;
+
+    // ============================================================================
+    // 1. ĐỌC NHIỆM VỤ & XỬ LÝ CHUYỂN BƯỚC / HOÀN THÀNH
+    // ============================================================================
     const req = getActiveTaskRequirement(state);
     if (!req) return;
 
@@ -1706,11 +1813,6 @@
       return;
     }
 
-    const targetMapId = req.mapId;
-    const targetMapName = MAP_NAMES[targetMapId] || ("Map " + targetMapId);
-    const now = Date.now();
-
-    // 0a. BƯỚC CHƯA HỖ TRỢ (mua đồ, trang bị, sự kiện, boss chưa có map...) -> DỪNG AN TOÀN, KHÔNG ĐOÁN
     if (req.isUnsupported) {
       setTanSatInRam(false);
       setBossAttackInRam(false, state);
@@ -1719,17 +1821,45 @@
       return;
     }
 
-    // 0b. Ghi nhận số lần tử trận
-    bot.wasDie = state.isDie;
+    // Nhận diện bước nhiệm vụ RAM thay đổi khi đang chạy bot (đóng ngay khung chat/hội thoại NPC cũ):
+    if (state.taskMaint) {
+      const taskKey = `${state.taskMaint.taskId}_${state.taskMaint.index}`;
+      if (bot.activeTaskKey && bot.activeTaskKey !== taskKey) {
+        resetStageTracking();
+        bot.deathCount = 0; // Đổi sang bước mới -> reset số lần chết
+        pressAsciiKeyInRam(27); // Đóng ngay popup hội thoại NPC vừa xong
+        dispatchKeyEvent("keydown", "Escape", 27, "Escape");
+        simulateCanvasClick(0.50, 0.15, 60); // Click lên bầu trời để blur/đóng khung chat
 
-    // 0c. XMAP KẸT: cùng một đích quá 90s mà vẫn chưa tới -> dừng & báo
-    if (state.mapId !== targetMapId && state.mapId === bot.lastMapForStuck && bot.lastXmapTargetId === targetMapId) {
+        // Đóng triệt để ChatPopup của NPC trong RAM
+        const chatPopupStatic = getStaticFieldsPtr(ADDR.ChatPopup_TypeInfo);
+        if (chatPopupStatic) {
+          HEAPU32[(chatPopupStatic + 16) >> 2] = 0; // currChatPopup = null
+          HEAPU32[(chatPopupStatic + 20) >> 2] = 0; // serverChatPopUp = null
+        }
+
+        if (state.ptrs.myCharPtr) {
+          HEAPU32[(state.ptrs.myCharPtr + 580) >> 2] = 0; // Xóa npcFocus
+        }
+      }
+      bot.activeTaskKey = taskKey;
+    }
+
+    const targetMapId = req.mapId;
+    bot.lastTargetMapId = targetMapId;
+    const targetMapName = MAP_NAMES[targetMapId] || ("Map " + targetMapId);
+
+    // ============================================================================
+    // 2. WATCHDOG KẸT XMAP (CHO MỌI ĐÍCH ĐẾN, KỂ CẢ TRẠM TÀU)
+    // ============================================================================
+    const activeTarget = bot.lastXmapTargetId !== -1 ? bot.lastXmapTargetId : targetMapId;
+    if (state.mapId !== activeTarget && state.mapId === bot.lastMapForStuck) {
       if (!bot.stuckSince) bot.stuckSince = now;
       if (now - bot.stuckSince > 90000) {
         bot.running = false;
         stopXmapInRam();
         setTanSatInRam(false);
-        bot.statusText = `🛑 Xmap không tới được ${targetMapName} sau 90s (map bị chặn/cần điều kiện). Hãy tự di chuyển rồi bấm lại.`;
+        bot.statusText = `🛑 Xmap không tới được Map ${activeTarget} sau 90s (map bị chặn/cần điều kiện). Hãy tự di chuyển rồi bấm tiếp.`;
         bot.stuckSince = 0;
         if (hudRefs && hudRefs.btnToggle) {
           hudRefs.btnToggle.textContent = "▶ BẮT ĐẦU AUTO";
@@ -1742,23 +1872,9 @@
     }
     bot.lastMapForStuck = state.mapId;
 
-    // 1. KIỂM TRA NHÂN VẬT CHẾT -> TỰ ĐỘNG BẤM "KIỆT SỨC" & CHỌN "VỀ NHÀ" TRỰC TIẾP TRONG RAM
-    if (state.isDie) {
-      setTanSatInRam(false);
-      setBossAttackInRam(false, state);
-      stopXmapInRam();
-      if (bot.options.autoGoback) {
-        setGobackInRam(true, targetMapId, 1, -1, -1);
-      }
-      if (!bot.lastReviveTime || now - bot.lastReviveTime > 300) {
-        triggerReviveOrConfirmInRam();
-        bot.lastReviveTime = now;
-      }
-      bot.statusText = `💀 Nhân vật tử trận! Đang bấm "Về nhà" và tự Goback quay lại ${targetMapName}...`;
-      return;
-    }
-
-    // 2. NẾU ĐANG CHUYỂN MAP HOẶC ĐANG TẢI BẢN ĐỒ -> ĐỢI TẢI XONG, TẮT TÀN SÁT
+    // ============================================================================
+    // 3. ĐANG CHUYỂN MAP HOẶC ĐANG TẢI DỮ LIỆU BẢN ĐỒ
+    // ============================================================================
     if (state.isChangingMap || state.isInfoDlgShowing) {
       setTanSatInRam(false);
       setBossAttackInRam(false, state);
@@ -1766,59 +1882,51 @@
       return;
     }
 
-    // 3. NẾU ĐANG Ở TRONG NHÀ (MAP 21, 22, 23) MÀ ĐÍCH ĐẾN Ở NGOÀI NHÀ: TỰ ĂN ĐẬU HỒI HP/KI VÀ TỰ RỜI KHỎI NHÀ
+    // ============================================================================
+    // 4. Ở TRONG NHÀ (MAP 21, 22, 23): ĂN ĐẬU & RỜI KHỎI NHÀ
+    // ============================================================================
     const isInsideHouse = state.mapId === 21 || state.mapId === 22 || state.mapId === 23;
     if (isInsideHouse && targetMapId !== state.mapId) {
       setTanSatInRam(false);
       setBossAttackInRam(false, state);
 
-      // 3a. Nếu vừa hồi sinh về nhà mà HP hoặc KI dưới 75%, tự động ăn Đậu thần trước khi đi
       if (state.cHPFull > 0 && (state.cHP < state.cHPFull * 0.75 || state.cMP < state.cMPFull * 0.75)) {
-        if (!bot.lastBeanTime || now - bot.lastBeanTime > 450) {
+        if (!bot.lastBeanTime || now - bot.lastBeanTime > 800) {
           useBeanInRam();
-          triggerReviveOrConfirmInRam(); // Thu hoạch / ăn đậu từ Cây Đậu Thần nếu đang đứng cạnh
           bot.lastBeanTime = now;
         }
-        bot.statusText = `🌱 Đang ở ${state.mapName}: Tự ăn Đậu thần hồi phục HP (${state.cHP}/${state.cHPFull}) trước khi đi ${targetMapName}...`;
-        // Không kẹt quá 2.5s nếu hết đậu trong hành trang
+        bot.statusText = `🌱 Đang ở ${state.mapName}: Ăn Đậu thần hồi phục HP (${state.cHP}/${state.cHPFull}) trước khi đi ${targetMapName}...`;
         if (!bot.houseEnterTime) bot.houseEnterTime = now;
-        if (now - bot.houseEnterTime < 2500) {
-          return;
-        }
+        if (now - bot.houseEnterTime < 2500) return;
       } else {
         bot.houseEnterTime = 0;
       }
 
-      // 3b. Tự động bước ra khỏi cửa nhà (Map 21->0, 22->7, 23->14)
-      if (!bot.lastHouseExitTime || now - bot.lastHouseExitTime > 450) {
+      if (!bot.lastHouseExitTime || now - bot.lastHouseExitTime > 500) {
         forceExitHouseInRam(state.ptrs.myCharPtr);
         bot.lastHouseExitTime = now;
       }
-      bot.statusText = `🚪 Đang tự động rời khỏi ${state.mapName} (${state.mapId}) để ra ngoài làm nhiệm vụ...`;
+      bot.statusText = `🚪 Đang rời khỏi ${state.mapName} để ra ngoài làm nhiệm vụ...`;
       return;
     }
     bot.houseEnterTime = 0;
 
-    // 4. KIỂM TRA ĐÃ ĐẾN ĐÚNG MAP CHỈ ĐỊNH CHƯA (100% THEO TileMap.mapID TRONG RAM)
+    // ============================================================================
+    // 5. CHƯA TỚI MAP MỤC TIÊU: DI CHUYỂN LIÊN HÀNH TINH HOẶC XMAP
+    // ============================================================================
     if (state.mapId !== targetMapId) {
-      if (state.tanSat) {
-        setTanSatInRam(false);
-      }
+      if (bot.zone1MapDone === targetMapId) bot.zone1MapDone = null;
+      if (state.tanSat) setTanSatInRam(false);
       setBossAttackInRam(false, state);
 
-      // 4a. KIỂM TRA ĐIỀU HƯỚNG LIÊN HÀNH TINH (Trái Đất 0, Namếc 1, Xayda 2)
       const currPlanet = getPlanetOfMap(state.mapId);
       const targetPlanet = getPlanetOfMap(targetMapId);
       const isDifferentPlanet = currPlanet !== -1 && targetPlanet !== -1 && currPlanet !== targetPlanet;
 
       if (isDifferentPlanet) {
         const stationMapId = PLANET_SPACESHIP_MAPS[currPlanet];
-        // Nếu chưa tới Trạm tàu vũ trụ của hành tinh hiện tại -> Xmap tới Trạm tàu vũ trụ
         if (state.mapId !== stationMapId) {
-          const needRetriggerStation =
-            !state.isXmapRunning ||
-            bot.lastXmapTargetId !== stationMapId;
-
+          const needRetriggerStation = !state.isXmapRunning || bot.lastXmapTargetId !== stationMapId;
           if (needRetriggerStation && (now - bot.lastXmapTriggerTime > 400)) {
             startXmapInRam(stationMapId, state.mapId);
             bot.lastXmapTriggerTime = now;
@@ -1828,10 +1936,7 @@
           return;
         }
 
-        // Đã tới Trạm tàu vũ trụ! Dừng Xmap và tương tác với Tàu vũ trụ để bay sang hành tinh đích
-        if (state.isXmapRunning) {
-          stopXmapInRam();
-        }
+        if (state.isXmapRunning) stopXmapInRam();
         if (!bot.lastSpaceshipTime || now - bot.lastSpaceshipTime > 380) {
           bot.statusText = autoUseSpaceshipToPlanetInRam(state, targetPlanet);
           bot.lastSpaceshipTime = now;
@@ -1839,69 +1944,54 @@
         return;
       }
 
-      // 4b. CÙNG HÀNH TINH: XMAP TRỰC TIẾP TỚI MAP ĐÍCH
+      // Cùng hành tinh: Xmap trực tiếp tới map đích
       const xmapCtrlReady = state.ptrs.xmapCtrlStatic !== 0;
-      const needRetrigger =
-        !state.isXmapRunning ||
-        !xmapCtrlReady ||
-        state.xmapTargetId !== targetMapId ||
-        bot.lastXmapTargetId !== targetMapId;
-
+      const needRetrigger = !state.isXmapRunning || !xmapCtrlReady || state.xmapTargetId !== targetMapId || bot.lastXmapTargetId !== targetMapId;
       if (needRetrigger && (now - bot.lastXmapTriggerTime > 400)) {
         startXmapInRam(targetMapId, state.mapId);
         bot.lastXmapTriggerTime = now;
         bot.lastXmapTargetId = targetMapId;
       }
-
-      bot.statusText = `🚀 Đang Xmap tự động: ${state.mapName} (${state.mapId}) ➔ ${targetMapName} (${targetMapId}) [${req.stepName}]`;
+      bot.statusText = `🚀 Đang Xmap: ${state.mapName} (${state.mapId}) ➔ ${targetMapName} (${targetMapId}) [${req.stepName}]`;
       return;
     }
 
-    // 5. ĐÃ ĐẾN ĐÚNG MAP MỤC TIÊU! DỪNG XMAP NẾU CÒN BẬT
+    // ĐÃ TỚI MAP MỤC TIÊU: Dừng Xmap nếu còn chạy
     if (state.isXmapRunning) {
       stopXmapInRam();
     }
 
-    // 5a. TỰ ĐỘNG CHUYỂN SANG KHU 1 KHI VỪA TỚI MAP LÀM NHIỆM VỤ
-    if (state.zoneId === 0 && (!bot.zone1MapDone || bot.zone1MapDone !== state.mapId)) {
-      if (!bot.zone1Tries) bot.zone1Tries = 0;
-      if (bot.zone1Tries < 3) {
-        if (!bot.lastZone1SwitchTime || now - bot.lastZone1SwitchTime > 2000) {
-          requestChangeZoneInRam(1);
-          bot.lastZone1SwitchTime = now;
-          bot.zone1Tries++;
-          bot.statusText = `📍 Đã tới ${targetMapName}, đang tự động chuyển sang Khu 1 để làm nhiệm vụ (lần ${bot.zone1Tries}/3)...`;
-          return;
-        }
-      } else {
-        bot.zone1MapDone = state.mapId;
-        bot.zone1Tries = 0;
-        // Đóng bảng khu nếu sau 3 lần không chuyển được
-        pressAsciiKeyInRam(27);
-        simulateCanvasClick(0.28, 0.13);
-      }
-    }
-    if (state.zoneId === 1) {
-      bot.zone1MapDone = state.mapId;
-      bot.zone1Tries = 0;
-      // Đảm bảo đóng bảng chọn khu nếu vẫn còn mở
-      pressAsciiKeyInRam(27);
-      simulateCanvasClick(0.28, 0.13);
+    // ============================================================================
+    // 6. XỬ LÝ TRẠNG THÁI ĐỔI KHU (ZONE CHANGE STATE MACHINE)
+    // ============================================================================
+    if (bot.zoneChangeState && bot.zoneChangeState.active) {
+      handleZoneChangeStep(state, now);
+      return; // CHẮC CHẮN RETURN: Không để các bước sau ghi đè Goback hay bật Tàn Sát!
     }
 
-    // Tự động ăn đậu nếu HP hoặc KI tụt dưới 45% khi đang đánh quái/trùm
+    // 6a. Tự động chuyển sang Khu 1 khi vừa tới map làm nhiệm vụ quái
+    // Không làm trên map nhà, trạm tàu, hoặc bước săn Boss / nói chuyện NPC
+    const NO_ZONE_MAPS = [21, 22, 23, 24, 25, 26, 45, 46, 52, 84];
+    const canAutoZone1 = !NO_ZONE_MAPS.includes(state.mapId) && !req.isBossStep && !req.isNpcStep;
+    if (canAutoZone1 && state.zoneId === 0 && (!bot.zone1MapDone || bot.zone1MapDone !== state.mapId)) {
+      startChangeZone(1, state.mapId);
+      return;
+    }
+
+    // Tự động ăn đậu nếu HP hoặc KI tụt dưới 45% khi đang farm
     if (state.cHPFull > 0 && (state.cHP < state.cHPFull * 0.45 || state.cMP < state.cMPFull * 0.45)) {
-      if (!bot.lastBeanTime || now - bot.lastBeanTime > 600) {
+      if (!bot.lastBeanTime || now - bot.lastBeanTime > 800) {
         useBeanInRam();
         bot.lastBeanTime = now;
       }
     }
 
-    // 6. XỬ LÝ BƯỚC BÁO CÁO / NÓI CHUYỆN VỚI NPC TỰ ĐỘNG TRONG RAM
+    // ============================================================================
+    // 7. XỬ LÝ BƯỚC BÁO CÁO / NÓI CHUYỆN VỚI NPC
+    // ============================================================================
     if (req.isNpcStep) {
       setTanSatInRam(false);
       setBossAttackInRam(false, state);
-      // Preset: sau ~8s hội thoại tại NPC thì coi như đã báo cáo xong -> sang bước kế (RAM-mode tự đổi theo nhiệm vụ)
       if (!req.isAutoRam) {
         if (bot.npcStepKey !== bot.stageIndex) {
           bot.npcStepKey = bot.stageIndex;
@@ -1922,13 +2012,14 @@
       return;
     }
 
-    // 7. XỬ LÝ NHIỆM VỤ TIÊU DIỆT TRÙM (BOSS: AKKUMAN / TAMBORINE / DRUM / TÀU PẢY PẢY / KUKU...)
+    // ============================================================================
+    // 8. XỬ LÝ NHIỆM VỤ TIÊU DIỆT TRÙM (BOSS)
+    // ============================================================================
     if (req.isBossStep) {
       if (bot.options.autoGoback) {
         setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
       }
       const hasBossChar = setBossAttackInRam(true, state, req.stepName);
-      // Preset: đã thấy boss rồi và boss biến mất (đã hạ) -> sang bước kế
       if (!req.isAutoRam) {
         if (hasBossChar) bot.bossSeenKey = bot.stageIndex;
         else if (bot.bossSeenKey === bot.stageIndex) {
@@ -1940,7 +2031,6 @@
           return;
         }
       }
-      // Bật thêm Tàn Sát để đánh cả trường hợp Trùm là Mob hoặc hỗ trợ dọn quái quanh Trùm
       if (!state.tanSat) {
         setTanSatInRam(true, {
           neSieuQuai: false,
@@ -1955,38 +2045,23 @@
       return;
     }
 
-    // Tắt chế độ focusBoss khi làm nhiệm vụ đánh quái thường
-    setBossAttackInRam(false, state);
-
-    // 8. KIỂM TRA BOSS TRONG KHU (NẾU BẬT NÉ BOSS KHI ĐÁNH QUÁI THƯỜNG) -> TỰ ĐỘNG ĐỔI KHU
+    // ============================================================================
+    // 9. NÉ BOSS TRONG KHU KHI ĐÁNH QUÁI THƯỜNG -> TỰ ĐỘNG ĐỔI KHU
+    // ============================================================================
     if (bot.options.avoidBoss && state.bossDetected && now > (bot.ignoreBossUntil || 0)) {
       setTanSatInRam(false);
-      if (bot.zoneTryFrom !== state.zoneId) {
-        bot.zoneTryFrom = state.zoneId;
-        bot.zoneTries = 0;
+      const currentZone = (state.zoneId >= 0 && state.zoneId < 30) ? state.zoneId : 0;
+      const nextZoneId = (currentZone + 1) % 15;
+      if (!bot.zoneChangeState || !bot.zoneChangeState.active) {
+        startChangeZone(nextZoneId, state.mapId);
       }
-      // Đã thử đổi khu 3 lần mà vẫn đứng nguyên (cơ chế đổi khu không hiệu lực) -> bỏ qua boss 60s & tiếp tục đánh
-      if (bot.zoneTries >= 3) {
-        bot.ignoreBossUntil = now + 60000;
-        bot.zoneTries = 0;
-        bot.statusText = `⚠️ Không đổi được khu khỏi ${state.bossDetected.name}. Bỏ qua né Boss 60s, hãy tự đổi khu nếu cần.`;
-      } else {
-        const currentZone = (state.zoneId >= 0 && state.zoneId < 30) ? state.zoneId : 0;
-        const nextZoneId = (currentZone + 1) % 15;
-        if (!bot.lastZoneChangeTime || now - bot.lastZoneChangeTime > 3000) {
-          if (bot.options.autoGoback) {
-            setGobackInRam(true, targetMapId, nextZoneId, state.cx, state.cy);
-          }
-          requestChangeZoneInRam(nextZoneId);
-          bot.lastZoneChangeTime = now;
-          bot.zoneTries++;
-        }
-        bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong Khu ${state.zoneId}! Đang đổi sang Khu ${nextZoneId} (lần ${bot.zoneTries}/3)...`;
-        return;
-      }
+      bot.statusText = `⚠️ Phát hiện ${state.bossDetected.name} trong Khu ${state.zoneId}! Đang đổi sang Khu ${nextZoneId}...`;
+      return;
     }
 
-    // 9. CẬP NHẬT BỘ ĐẾM QUÁI TRỰC TIẾP TỪ RAM
+    // ============================================================================
+    // 10. TIÊU DIỆT QUÁI THƯỜNG & TÀN SÁT
+    // ============================================================================
     updateKillCounterFromRamMobs(state, targetMapId);
 
     const updatedReq = getActiveTaskRequirement(state);
@@ -1998,7 +2073,6 @@
       return;
     }
 
-    // 10. BẬT TÀN SÁT & CẤU HÌNH GOBACK TRỰC TIẾP TRONG RAM
     if (bot.options.autoGoback) {
       setGobackInRam(true, targetMapId, state.zoneId, state.cx, state.cy);
     }
@@ -2014,6 +2088,20 @@
 
     bot.statusText = `⚔️ [${updatedReq.stepName}] Đang đánh tại ${targetMapName} (Khu ${state.zoneId})${updatedReq.isCollectStep ? ' [Săn nhặt vật phẩm]' : `: ${updatedReq.currentKills}/${updatedReq.targetKills}`}`;
   }
+
+  // Xuất các công cụ chẩn đoán trực tiếp vào console để kiểm tra từng kênh input
+  window.__NRO_DBG__ = {
+    readGameState,
+    pressAsciiKeyInRam,
+    tapKey,
+    simulateCanvasClick,
+    dispatchKeyEvent,
+    triggerReviveOrConfirmInRam,
+    startChangeZone,
+    requestChangeZoneInRam,
+    setTanSatInRam,
+    setGobackInRam
+  };
 
   // ============================================================================
   // 7. GIAO DIỆN ĐIỀU KHIỂN NỔI TRONG GAME (FLOATING HUD PANEL)
@@ -2045,7 +2133,7 @@
 
     container.innerHTML = `
       <div id="nro-bot-header" style="background: linear-gradient(90deg, #0284c7, #0369a1); padding: 8px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-        <span>🐉 NRO DEEP MEMORY BOT v2.4.8</span>
+        <span>🐉 NRO DEEP MEMORY BOT v2.4.9</span>
         <div style="display:flex; gap:6px; align-items:center;">
           <span id="nro-ram-badge" style="background:#ef4444; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px;">WASM: CHỜ</span>
           <button id="nro-btn-min" style="background:transparent; border:none; color:#fff; font-weight:bold; cursor:pointer; font-size:14px;">−</button>
@@ -2367,5 +2455,5 @@
   }
 
   window.__NRO_DEEP_BOT_TIMER__ = setInterval(tickBot, 250);
-  console.log("[NRO Deep Bot v2.4.4] Đã nạp thành công! Sửa dứt điểm Tàu vũ trụ (loại bỏ hoàn toàn Uron bán sách, tự động đóng shop & chọn bay sang Namếc/Xayda/Trái Đất).");
+  console.log("[NRO Deep Bot v2.4.9] Đã nạp thành công! Sửa dứt điểm: Hồi sinh Về nhà khi chết, Đổi sang Khu 1 chuẩn xác, Tự động săn Ốc mượn hồn lấy truyện, Đóng hội thoại NPC & loại bỏ báo nhầm Boss.");
 })();
